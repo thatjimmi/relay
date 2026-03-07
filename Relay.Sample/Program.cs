@@ -1,187 +1,155 @@
-using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Relay.Inbox.Core;
 using Relay.Inbox.Extensions;
 using Relay.Outbox.Core;
 using Relay.Outbox.Extensions;
 using Relay.Outbox.Internal;
 using Relay.Sample.Domain;
-using Relay.Sample.Storage;
+using Relay.Sample.Infrastructure;
+using Relay.Sample.Workers;
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
+var builder = WebApplication.CreateBuilder(args);
 
-const string DbPath = "relay-sample.db";
-const string Channel = "orders";
-var connStr = $"Data Source={DbPath}";
+var connStr = $"Data Source={builder.Configuration["Relay:Database"] ?? "relay-sample.db"}";
 
-// ---------------------------------------------------------------------------
-// DI setup
-// ---------------------------------------------------------------------------
-
-var services = new ServiceCollection();
-
-services.AddLogging(b => b
-    .AddConsole()
-    .SetMinimumLevel(LogLevel.Warning)); // suppress framework noise
-
-// Inbox: register the "orders" channel with its handler
-services
-    .AddInbox(Channel, inbox => inbox
+// ── Inbox ─────────────────────────────────────────────────────────────────
+builder.Services
+    .AddInbox("orders", inbox => inbox
         .WithHandler<OrderPlaced, OrderPlacedHandler>()
         .WithOptions(o =>
         {
-            // Link inbox → outbox correlation automatically
+            // Automatically sets a correlation context so that any outbox messages
+            // written during handler execution carry the inbox message ID.
             o.CorrelationScope = OutboxCorrelationContext.Set;
-            o.OnProcessed = msg =>
-            {
-                Console.WriteLine($"  [inbox]  processed  {msg.IdempotencyKey}");
-                return Task.CompletedTask;
-            };
+
             o.OnDeadLettered = (msg, ex) =>
             {
-                Console.WriteLine($"  [inbox]  DEAD       {msg.IdempotencyKey}: {ex.Message}");
+                // In production: fire a PagerDuty / Slack alert here.
+                Console.Error.WriteLine(
+                    $"[DEAD LETTER] inbox={msg.InboxName} key={msg.IdempotencyKey} error={ex.Message}");
                 return Task.CompletedTask;
             };
         }));
 
-// Outbox: register the "orders" channel with its publishers
-services
-    .AddOutbox(Channel, outbox => outbox
+// ── Outbox ────────────────────────────────────────────────────────────────
+builder.Services
+    .AddOutbox("orders", outbox => outbox
         .WithPublisher<OrderFulfillmentRequested, FulfillmentPublisher>()
         .WithPublisher<OrderConfirmationSent, ConfirmationPublisher>()
-        .OnPublished(msg =>
+        .OnDeadLettered((msg, ex) =>
         {
-            var shortType = msg.Type.Split('.').Last();
-            var shortCorr = msg.CorrelationId is { Length: > 8 } c ? c[..8] + "…" : msg.CorrelationId;
-            Console.WriteLine($"  [outbox] published  {shortType,-35} corr: {shortCorr}");
+            Console.Error.WriteLine(
+                $"[DEAD LETTER] outbox={msg.OutboxName} type={msg.Type} error={ex.Message}");
             return Task.CompletedTask;
         }));
 
-// Register SQLite stores (implement IInboxStore / IOutboxStore)
-var inboxStore  = new SqliteInboxStore(connStr);
-var outboxStore = new SqliteOutboxStore(connStr);
-services.AddSingleton<IInboxStore>(inboxStore);
-services.AddSingleton<IOutboxStore>(outboxStore);
+// ── Infrastructure ────────────────────────────────────────────────────────
+// Registers IInboxStore + IOutboxStore (SQLite) and initialises the schema
+// via a hosted service that runs before Kestrel accepts connections.
+builder.Services.AddSqliteRelayStores(connStr);
 
-var sp = services.BuildServiceProvider();
+// ── Background workers ────────────────────────────────────────────────────
+// InboxWorker  – processes pending inbox messages on a PeriodicTimer.
+// OutboxWorker – dispatches staged outbox messages on a PeriodicTimer.
+// Polling intervals are read from appsettings.json → Relay:Inbox/Outbox:PollingIntervalSeconds
+builder.Services.AddHostedService<InboxWorker>();
+builder.Services.AddHostedService<OutboxWorker>();
 
-// ---------------------------------------------------------------------------
-// Ensure schema
-// ---------------------------------------------------------------------------
+// ── JSON serialisation ────────────────────────────────────────────────────
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.WriteIndented = true);
 
-await inboxStore.EnsureSchemaAsync();
-await outboxStore.EnsureSchemaAsync();
+// ─────────────────────────────────────────────────────────────────────────
 
-Console.WriteLine($"SQLite db: {Path.GetFullPath(DbPath)}");
-Console.WriteLine();
+var app = builder.Build();
 
-// ---------------------------------------------------------------------------
-// Step 1: Receive messages at the system boundary
-// ---------------------------------------------------------------------------
+// ── Endpoints ─────────────────────────────────────────────────────────────
 
-Console.WriteLine("=== Step 1: Receiving orders ===");
-
-await using (var scope = sp.CreateAsyncScope())
+// POST /orders
+// Receive a single order at the system boundary.
+// Returns 202 Accepted with the message ID, or 200 OK if it's a duplicate.
+app.MapPost("/orders", async (
+    OrderPlaced order,
+    IInboxReceiver<OrderPlaced> receiver,
+    CancellationToken ct) =>
 {
-    var receiver = scope.ServiceProvider.GetRequiredService<IInboxReceiver<OrderPlaced>>();
+    var result = await receiver.ReceiveAsync(order, source: "api", ct: ct);
 
-    var orders = new[]
-    {
-        new OrderPlaced("ORD-001", "CUST-A", ["Widget", "Gadget"],               49.99m),
-        new OrderPlaced("ORD-002", "CUST-B", ["Thingamajig"],                    12.50m),
-        new OrderPlaced("ORD-003", "CUST-C", ["Doohickey", "Gizmo", "Whatsit"], 199.00m),
-        // Duplicate — same OrderId → same idempotency key → silently dropped
-        new OrderPlaced("ORD-001", "CUST-A", ["Widget", "Gadget"],               49.99m),
-    };
+    return result.WasDuplicate
+        ? Results.Ok(new { status = "duplicate", orderId = order.OrderId })
+        : Results.Accepted(
+            $"/orders/{order.OrderId}",
+            new { status = "accepted", orderId = order.OrderId, messageId = result.MessageId });
+});
 
-    foreach (var order in orders)
+// GET /stats
+// Current inbox and outbox stats for the "orders" channel.
+app.MapGet("/stats", async (
+    IInboxStore  inboxStore,
+    IOutboxStore outboxStore,
+    CancellationToken ct) =>
+{
+    var inbox  = await inboxStore.GetStatsAsync("orders", ct);
+    var outbox = await outboxStore.GetStatsAsync("orders", ct);
+    return Results.Ok(new { inbox, outbox });
+});
+
+// GET /orders/dead
+// Inspect dead-lettered inbox messages (failed after exhausting all retries).
+app.MapGet("/orders/dead", async (
+    IInboxStore inboxStore,
+    CancellationToken ct) =>
+{
+    var dead = await inboxStore.GetDeadLetteredAsync("orders", ct: ct);
+    return Results.Ok(dead);
+});
+
+// POST /orders/{id}/requeue
+// Requeue a single dead-lettered or failed inbox message for reprocessing.
+app.MapPost("/orders/{id}/requeue", async (
+    Guid id,
+    IInboxStore inboxStore,
+    CancellationToken ct) =>
+{
+    var requeued = await inboxStore.RequeueAsync(id, ct);
+    return requeued
+        ? Results.Ok(new { requeued = true, messageId = id })
+        : Results.NotFound(new { error = "Message not found or not in a requeueable state." });
+});
+
+// POST /demo/seed
+// Convenience endpoint — seeds a few sample orders so you can watch the
+// workers pick them up without writing curl commands by hand.
+app.MapPost("/demo/seed", async (
+    IInboxReceiver<OrderPlaced> receiver,
+    CancellationToken ct) =>
+{
+    OrderPlaced[] orders =
+    [
+        new("ORD-001", "CUST-A", ["Widget", "Gadget"],               49.99m),
+        new("ORD-002", "CUST-B", ["Thingamajig"],                    12.50m),
+        new("ORD-003", "CUST-C", ["Doohickey", "Gizmo", "Whatsit"], 199.00m),
+    ];
+
+    var results = new List<object>();
+    foreach (var o in orders)
     {
-        var result = await receiver.ReceiveAsync(order, source: "checkout-service");
-        var tag = result.WasDuplicate ? "DUPLICATE" : "accepted ";
-        Console.WriteLine($"  order {order.OrderId}: {tag}");
+        var r = await receiver.ReceiveAsync(o, source: "demo-seed", ct: ct);
+        results.Add(new
+        {
+            orderId = o.OrderId,
+            status  = r.WasDuplicate ? "duplicate" : "accepted",
+            messageId = r.MessageId,
+        });
     }
-}
 
-// ---------------------------------------------------------------------------
-// Step 2: Process the inbox — handlers run, outbox messages are staged
-// ---------------------------------------------------------------------------
+    return Results.Ok(results);
+});
 
-Console.WriteLine();
-Console.WriteLine("=== Step 2: Processing inbox ===");
+// ─────────────────────────────────────────────────────────────────────────
 
-await using (var scope = sp.CreateAsyncScope())
-{
-    var processor = scope.ServiceProvider.GetRequiredService<IInboxProcessor>();
-    var result = await processor.ProcessPendingAsync(Channel);
-    Console.WriteLine($"  processed: {result.Processed}  failed: {result.Failed}");
-}
+app.Logger.LogInformation("Relay Sample API started");
+app.Logger.LogInformation("SQLite database: {Path}", Path.GetFullPath(
+    builder.Configuration["Relay:Database"] ?? "relay-sample.db"));
+app.Logger.LogInformation("Try: POST http://localhost:5000/demo/seed  then  GET http://localhost:5000/stats");
 
-// ---------------------------------------------------------------------------
-// Step 3: Dispatch the outbox — publishers deliver to downstream services
-// ---------------------------------------------------------------------------
-
-Console.WriteLine();
-Console.WriteLine("=== Step 3: Dispatching outbox ===");
-
-await using (var scope = sp.CreateAsyncScope())
-{
-    var dispatcher = scope.ServiceProvider.GetRequiredService<IOutboxDispatcher>();
-    var result = await dispatcher.DispatchPendingAsync(Channel);
-    Console.WriteLine($"  published: {result.Published}  failed: {result.Failed}");
-}
-
-// ---------------------------------------------------------------------------
-// Step 4: Stats — inspect what's in the database
-// ---------------------------------------------------------------------------
-
-Console.WriteLine();
-Console.WriteLine("=== Step 4: Stats ===");
-
-var inboxStats  = await inboxStore.GetStatsAsync(Channel);
-var outboxStats = await outboxStore.GetStatsAsync(Channel);
-
-Console.WriteLine(
-    $"  Inbox  — pending: {inboxStats.Pending}  processed: {inboxStats.Processed}" +
-    $"  failed: {inboxStats.Failed}  dead: {inboxStats.DeadLettered}");
-Console.WriteLine(
-    $"  Outbox — pending: {outboxStats.Pending}  published: {outboxStats.Published}" +
-    $"  failed: {outboxStats.Failed}  dead: {outboxStats.DeadLettered}");
-
-// ---------------------------------------------------------------------------
-// Step 5: Correlation — link outbox messages back to their inbox message
-// ---------------------------------------------------------------------------
-
-Console.WriteLine();
-Console.WriteLine("=== Step 5: Correlation trace ===");
-
-// Grab a correlation ID (= inbox message Id) from the outbox table
-var firstCorrId = await GetFirstCorrelationIdAsync(connStr, Channel);
-
-if (firstCorrId is not null)
-{
-    var linked = await outboxStore.GetByCorrelationIdAsync(firstCorrId);
-    Console.WriteLine($"  Outbox messages tied to inbox message {firstCorrId}:");
-    foreach (var m in linked)
-        Console.WriteLine($"    {m.Type.Split('.').Last(),-35} status: {m.Status}  dest: {m.Destination}");
-}
-
-Console.WriteLine();
-Console.WriteLine($"Done. Inspect {DbPath} with any SQLite viewer.");
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-static async Task<string?> GetFirstCorrelationIdAsync(string cs, string outboxName)
-{
-    await using var conn = new SqliteConnection(cs);
-    await conn.OpenAsync();
-    await using var cmd = new SqliteCommand(
-        "SELECT CorrelationId FROM OutboxMessages WHERE OutboxName = @n AND CorrelationId IS NOT NULL LIMIT 1",
-        conn);
-    cmd.Parameters.AddWithValue("@n", outboxName);
-    return await cmd.ExecuteScalarAsync() as string;
-}
+app.Run();

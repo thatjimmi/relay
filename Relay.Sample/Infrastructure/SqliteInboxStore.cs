@@ -1,11 +1,11 @@
 using Microsoft.Data.Sqlite;
 using Relay.Inbox.Core;
 
-namespace Relay.Sample.Storage;
+namespace Relay.Sample.Infrastructure;
 
 /// <summary>
 /// IInboxStore backed by SQLite via Microsoft.Data.Sqlite.
-/// Schema auto-created on first use via EnsureSchemaAsync.
+/// Schema auto-created on startup via EnsureSchemaAsync (called by SqliteSchemaInitializer).
 /// </summary>
 public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 {
@@ -15,8 +15,8 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
     public async Task EnsureSchemaAsync(CancellationToken ct = default)
     {
-        // SQLite stores GUIDs as TEXT and datetimes as ISO-8601 TEXT.
-        // No UNIQUEIDENTIFIER, no NVARCHAR — just TEXT and INTEGER.
+        // SQLite stores GUIDs and datetimes as ISO-8601 TEXT.
+        // No UNIQUEIDENTIFIER, NVARCHAR or SQL Server hints needed.
         const string sql = """
             CREATE TABLE IF NOT EXISTS InboxMessages (
                 Id              TEXT    NOT NULL PRIMARY KEY,
@@ -52,8 +52,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@key", idempotencyKey);
-        var result = await cmd.ExecuteScalarAsync(ct);
-        return result is not null;
+        return await cmd.ExecuteScalarAsync(ct) is not null;
     }
 
     public async Task InsertAsync(InboxMessage message, CancellationToken ct = default)
@@ -144,7 +143,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
     // -------------------------------------------------------------------------
     // IInboxQuery — stats, dead-letters, purge
-    // SQLite doesn't support multi-result batches reliably, so use separate cmds
+    // SQLite doesn't support multi-result batches reliably, so use separate cmds.
     // -------------------------------------------------------------------------
 
     public async Task<InboxStats> GetStatsAsync(string inboxName, CancellationToken ct = default)
@@ -159,9 +158,9 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         await using (var cmd = new SqliteCommand(countSql, conn))
         {
             cmd.Parameters.AddWithValue("@inbox", inboxName);
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-                counts[(InboxMessageStatus)reader.GetInt32(0)] = reader.GetInt32(1);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                counts[(InboxMessageStatus)r.GetInt32(0)] = r.GetInt32(1);
         }
 
         DateTime? oldestPending = null;
@@ -172,8 +171,8 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         await using (var cmd = new SqliteCommand(oldestSql, conn))
         {
             cmd.Parameters.AddWithValue("@inbox", inboxName);
-            var val = await cmd.ExecuteScalarAsync(ct);
-            if (val is string s) oldestPending = DateTime.Parse(s);
+            if (await cmd.ExecuteScalarAsync(ct) is string s)
+                oldestPending = DateTime.Parse(s);
         }
 
         return new InboxStats(

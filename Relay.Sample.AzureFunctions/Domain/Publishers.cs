@@ -1,11 +1,11 @@
 using Microsoft.Extensions.Logging;
 using Relay.Outbox.Core;
 
-namespace Relay.Sample.Domain;
+namespace Relay.Sample.AzureFunctions.Domain;
 
 /// <summary>
 /// Simulates delivery to the warehouse service.
-/// In production swap this for a RabbitMQ publish, HTTP call, Service Bus send, etc.
+/// In production: publish to Service Bus, RabbitMQ, HTTP call, etc.
 /// </summary>
 public sealed class FulfillmentPublisher(ILogger<FulfillmentPublisher> logger)
     : IOutboxPublisher<OrderFulfillmentRequested>

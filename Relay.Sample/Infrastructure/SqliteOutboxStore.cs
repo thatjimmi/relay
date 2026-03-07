@@ -1,11 +1,11 @@
 using Microsoft.Data.Sqlite;
 using Relay.Outbox.Core;
 
-namespace Relay.Sample.Storage;
+namespace Relay.Sample.Infrastructure;
 
 /// <summary>
 /// IOutboxStore backed by SQLite via Microsoft.Data.Sqlite.
-/// Schema auto-created on first use via EnsureSchemaAsync.
+/// Schema auto-created on startup via EnsureSchemaAsync (called by SqliteSchemaInitializer).
 /// </summary>
 public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 {
@@ -72,13 +72,13 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         cmd.Parameters.AddWithValue("@status",        (int)message.Status);
         cmd.Parameters.AddWithValue("@createdAt",     message.CreatedAt.ToString("O"));
         cmd.Parameters.AddWithValue("@scheduledFor",  message.ScheduledFor.HasValue
-            ? message.ScheduledFor.Value.ToString("O")
+            ? (object)message.ScheduledFor.Value.ToString("O")
             : DBNull.Value);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     // -------------------------------------------------------------------------
-    // Read path — LIMIT instead of TOP, datetime() instead of SYSUTCDATETIME()
+    // Read path — LIMIT, datetime('now') instead of SYSUTCDATETIME(), no hints
     // -------------------------------------------------------------------------
 
     public async Task<IReadOnlyList<OutboxMessage>> GetPendingAsync(
@@ -157,9 +157,9 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using (var cmd = new SqliteCommand(countSql, conn))
         {
             cmd.Parameters.AddWithValue("@outbox", outboxName);
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-                counts[(OutboxMessageStatus)reader.GetInt32(0)] = reader.GetInt32(1);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                counts[(OutboxMessageStatus)r.GetInt32(0)] = r.GetInt32(1);
         }
 
         DateTime? oldestPending = null;
@@ -171,8 +171,8 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using (var cmd = new SqliteCommand(oldestSql, conn))
         {
             cmd.Parameters.AddWithValue("@outbox", outboxName);
-            var val = await cmd.ExecuteScalarAsync(ct);
-            if (val is string s) oldestPending = DateTime.Parse(s);
+            if (await cmd.ExecuteScalarAsync(ct) is string s)
+                oldestPending = DateTime.Parse(s);
         }
 
         var scheduled = 0;
@@ -185,8 +185,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using (var cmd = new SqliteCommand(scheduledSql, conn))
         {
             cmd.Parameters.AddWithValue("@outbox", outboxName);
-            var val = await cmd.ExecuteScalarAsync(ct);
-            if (val is long l) scheduled = (int)l;
+            if (await cmd.ExecuteScalarAsync(ct) is long l) scheduled = (int)l;
         }
 
         return new OutboxStats(

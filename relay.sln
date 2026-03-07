@@ -20,6 +20,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Relay", "Relay\Relay.csproj
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Relay.Sample", "Relay.Sample\Relay.Sample.csproj", "{230A5FEC-7272-4696-920C-7A381629D06B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Relay.Sample.AzureFunctions", "Relay.Sample.AzureFunctions\Relay.Sample.AzureFunctions.csproj", "{1744A76E-4572-47F3-A968-FB8410CCCDC1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -62,6 +64,10 @@ Global
 		{230A5FEC-7272-4696-920C-7A381629D06B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{230A5FEC-7272-4696-920C-7A381629D06B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{230A5FEC-7272-4696-920C-7A381629D06B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1744A76E-4572-47F3-A968-FB8410CCCDC1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1744A76E-4572-47F3-A968-FB8410CCCDC1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1744A76E-4572-47F3-A968-FB8410CCCDC1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1744A76E-4572-47F3-A968-FB8410CCCDC1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
