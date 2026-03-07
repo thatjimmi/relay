@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Relay</RootNamespace>
+
+    <PackageId>Relay</PackageId>
+    <Version>1.0.0</Version>
+    <Description>
+      Full inbox + outbox pattern for .NET 8+. Raw ADO.NET, no ORM.
+      Idempotent message reception, reliable event publishing, automatic
+      inbox→outbox correlation, scheduled dispatch, dead-lettering, and
+      SKIP LOCKED parallel processing. Easy to test — InMemory stores
+      and fake doubles ship in the package.
+    </Description>
+    <Authors>YourName</Authors>
+    <PackageTags>inbox;outbox;messaging;reliability;idempotency;at-least-once</PackageTags>
+  </PropertyGroup>
+
+  <!--
+    The meta-package has no code of its own.
+    It pulls in both packages and wires them together via
+    the integration extensions in this project.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Relay.Inbox\Relay.Inbox.csproj" />
+    <ProjectReference Include="..\Relay.Outbox\Relay.Outbox.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Relay.Outbox</RootNamespace>
+
+    <PackageId>Relay.Outbox</PackageId>
+    <Version>1.0.0</Version>
+    <Description>Lightweight outbox pattern for .NET. Raw ADO.NET (no ORM). Named isolated outboxes with pluggable publishers. Scheduled dispatch, automatic correlation to inbox messages, SKIP LOCKED for parallel-safe dispatch.</Description>
+    <Authors>YourName</Authors>
+    <PackageTags>outbox;inbox;messaging;reliability;at-least-once</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Relay.Outbox.Tests" />
+    <InternalsVisibleTo Include="Relay.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient"                          Version="5.2.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions"         Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"         Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

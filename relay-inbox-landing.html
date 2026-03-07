@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Relay.Inbox — Never lose a message</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --ink:      #0d0f0e;
+    --paper:    #f0ede6;
+    --relay:    #c8f564;
+    --relay-dk: #9ecf30;
+    --muted:    #7a7d74;
+    --border:   #d4d0c8;
+    --code-bg:  #1a1c1b;
+    --code-fg:  #c8f564;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Syne', sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV ─────────────────────────────────────────── */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.25rem 3rem;
+    background: var(--paper);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-logo {
+    font-size: 1rem; font-weight: 800; letter-spacing: -.02em;
+    display: flex; align-items: center; gap: .5rem;
+  }
+  .nav-logo .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--relay); display: inline-block;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.4); opacity: .7; }
+  }
+  .nav-links { display: flex; gap: 2rem; align-items: center; }
+  .nav-links a {
+    text-decoration: none; color: var(--muted); font-size: .875rem;
+    font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    transition: color .2s;
+  }
+  .nav-links a:hover { color: var(--ink); }
+  .nav-badge {
+    background: var(--ink); color: var(--relay);
+    padding: .4rem 1rem; font-size: .8rem;
+    font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    font-family: 'DM Mono', monospace;
+  }
+
+  /* ── HERO ────────────────────────────────────────── */
+  .hero {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding-top: 5rem;
+    overflow: hidden;
+  }
+  .hero-left {
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 6rem 3rem 6rem 4rem;
+  }
+  .hero-eyebrow {
+    font-family: 'DM Mono', monospace;
+    font-size: .75rem; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 1.5rem;
+    display: flex; align-items: center; gap: .75rem;
+  }
+  .hero-eyebrow::before {
+    content: ''; display: inline-block;
+    width: 2rem; height: 1px; background: var(--muted);
+  }
+  h1 {
+    font-family: 'Instrument Serif', serif;
+    font-size: clamp(3.5rem, 6vw, 5.5rem);
+    line-height: 1.0;
+    letter-spacing: -.03em;
+    margin-bottom: 1.5rem;
+  }
+  h1 em { font-style: italic; color: var(--muted); }
+  .hero-sub {
+    font-size: 1.125rem; color: var(--muted);
+    max-width: 44ch; line-height: 1.7;
+    margin-bottom: 3rem;
+    font-weight: 400;
+  }
+  .hero-actions { display: flex; gap: 1rem; align-items: center; }
+  .btn-primary {
+    background: var(--ink); color: var(--relay);
+    padding: .9rem 2rem; font-weight: 700;
+    font-size: .875rem; letter-spacing: .05em; text-transform: uppercase;
+    border: none; cursor: pointer;
+    font-family: 'Syne', sans-serif;
+    transition: background .2s, transform .1s;
+  }
+  .btn-primary:hover { background: #1f2421; transform: translateY(-1px); }
+  .btn-ghost {
+    background: transparent; color: var(--ink);
+    padding: .9rem 1.5rem; font-weight: 600;
+    font-size: .875rem; letter-spacing: .04em;
+    border: 1px solid var(--border); cursor: pointer;
+    font-family: 'Syne', sans-serif;
+    display: flex; align-items: center; gap: .5rem;
+    transition: border-color .2s;
+    text-decoration: none;
+  }
+  .btn-ghost:hover { border-color: var(--ink); }
+
+  .hero-right {
+    background: var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    padding: 4rem 3rem;
+    position: relative; overflow: hidden;
+  }
+  .hero-right::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 70% 30%, rgba(200,245,100,.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .flow-diagram {
+    width: 100%; max-width: 420px;
+    display: flex; flex-direction: column; gap: 0;
+    position: relative; z-index: 1;
+  }
+  .flow-node {
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.1);
+    padding: 1.25rem 1.5rem;
+    display: flex; align-items: center; gap: 1rem;
+    opacity: 0;
+    transform: translateX(20px);
+    animation: slideIn .5s forwards;
+  }
+  .flow-node:nth-child(1) { animation-delay: .2s; }
+  .flow-node:nth-child(3) { animation-delay: .5s; }
+  .flow-node:nth-child(5) { animation-delay: .8s; }
+  .flow-node:nth-child(7) { animation-delay: 1.1s; }
+
+  @keyframes slideIn {
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .flow-arrow {
+    display: flex; align-items: center; justify-content: center;
+    padding: .5rem 1.5rem;
+    opacity: 0; animation: fadeIn .3s forwards;
+  }
+  .flow-arrow:nth-child(2) { animation-delay: .35s; }
+  .flow-arrow:nth-child(4) { animation-delay: .65s; }
+  .flow-arrow:nth-child(6) { animation-delay: .95s; }
+  @keyframes fadeIn { to { opacity: 1; } }
+
+  .flow-arrow svg { color: var(--relay); }
+  .flow-icon {
+    width: 36px; height: 36px;
+    background: rgba(200,245,100,.12);
+    border: 1px solid rgba(200,245,100,.25);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 1rem;
+  }
+  .flow-label {
+    font-family: 'DM Mono', monospace;
+    font-size: .8rem; color: rgba(255,255,255,.8);
+    letter-spacing: .04em;
+  }
+  .flow-label strong { color: var(--relay); display: block; font-size: .7rem; margin-bottom: .1rem; text-transform: uppercase; letter-spacing: .1em; }
+
+  /* ── NAME SECTION ─────────────────────────────────── */
+  .name-section {
+    padding: 8rem 4rem;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6rem;
+    align-items: center;
+    border-top: 1px solid var(--border);
+  }
+  .name-left h2 {
+    font-family: 'Instrument Serif', serif;
+    font-size: clamp(2.5rem, 4vw, 4rem);
+    line-height: 1.1; letter-spacing: -.03em;
+    margin-bottom: 2rem;
+  }
+  .name-left h2 em { font-style: italic; color: var(--muted); }
+  .name-etymology {
+    display: flex; flex-direction: column; gap: 1.5rem;
+  }
+  .etymology-item {
+    padding: 1.5rem;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--relay);
+    opacity: 0; transform: translateY(16px);
+    transition: opacity .5s, transform .5s;
+  }
+  .etymology-item.visible { opacity: 1; transform: translateY(0); }
+  .etymology-item:nth-child(2) { transition-delay: .1s; }
+  .etymology-item:nth-child(3) { transition-delay: .2s; }
+  .etymology-item:nth-child(4) { transition-delay: .3s; }
+  .etym-word {
+    font-family: 'DM Mono', monospace; font-size: .7rem;
+    letter-spacing: .1em; text-transform: uppercase;
+    color: var(--relay-dk); margin-bottom: .5rem;
+  }
+  .etym-def { font-size: .95rem; color: var(--ink); line-height: 1.6; }
+  .etym-def strong { font-weight: 700; }
+
+  /* ── HOW IT WORKS ─────────────────────────────────── */
+  .how-section {
+    background: var(--ink); color: var(--paper);
+    padding: 8rem 4rem;
+    border-top: 4px solid var(--relay);
+  }
+  .section-header {
+    display: flex; align-items: baseline; gap: 1.5rem;
+    margin-bottom: 5rem;
+  }
+  .section-num {
+    font-family: 'DM Mono', monospace;
+    font-size: .75rem; color: var(--relay);
+    letter-spacing: .1em; text-transform: uppercase;
+  }
+  .section-title {
+    font-family: 'Instrument Serif', serif;
+    font-size: clamp(2rem, 3.5vw, 3rem);
+    letter-spacing: -.03em; line-height: 1.1;
+  }
+  .features-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+    background: rgba(255,255,255,.08);
+  }
+  .feature-card {
+    background: var(--ink);
+    padding: 2.5rem 2rem;
+    transition: background .2s;
+    opacity: 0; transform: translateY(20px);
+    transition: opacity .5s, transform .5s, background .2s;
+  }
+  .feature-card.visible { opacity: 1; transform: translateY(0); }
+  .feature-card:hover { background: #141917; }
+  .feature-card:nth-child(2) { transition-delay: .07s; }
+  .feature-card:nth-child(3) { transition-delay: .14s; }
+  .feature-card:nth-child(4) { transition-delay: .21s; }
+  .feature-card:nth-child(5) { transition-delay: .28s; }
+  .feature-card:nth-child(6) { transition-delay: .35s; }
+  .feature-icon {
+    font-size: 1.5rem; margin-bottom: 1.25rem;
+    width: 48px; height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(200,245,100,.08);
+    border: 1px solid rgba(200,245,100,.2);
+    margin-bottom: 1.5rem;
+  }
+  .feature-name {
+    font-size: 1rem; font-weight: 700;
+    letter-spacing: -.01em; margin-bottom: .75rem;
+    color: var(--paper);
+  }
+  .feature-desc {
+    font-size: .9rem; color: rgba(240,237,230,.55);
+    line-height: 1.7; font-weight: 400;
+    font-family: 'DM Mono', monospace;
+  }
+  .feature-tag {
+    display: inline-block; margin-top: 1.25rem;
+    font-family: 'DM Mono', monospace;
+    font-size: .65rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--relay); padding: .25rem .6rem;
+    border: 1px solid rgba(200,245,100,.3);
+  }
+
+  /* ── ARCHITECTURE SECTION ─────────────────────────── */
+  .arch-section {
+    padding: 8rem 4rem;
+    border-top: 1px solid var(--border);
+  }
+  .arch-section .section-num { color: var(--muted); }
+  .arch-section .section-title { color: var(--ink); }
+  .arch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4rem; margin-top: 4rem; }
+  .arch-step {
+    display: flex; gap: 1.5rem;
+    opacity: 0; transform: translateX(-16px);
+    transition: opacity .5s, transform .5s;
+  }
+  .arch-step.visible { opacity: 1; transform: translateX(0); }
+  .arch-step:nth-child(2) { transition-delay: .1s; }
+  .arch-step:nth-child(3) { transition-delay: .2s; }
+  .arch-step:nth-child(4) { transition-delay: .3s; }
+  .arch-step:nth-child(5) { transition-delay: .4s; }
+  .arch-step:nth-child(6) { transition-delay: .5s; }
+  .step-num {
+    font-family: 'Instrument Serif', serif;
+    font-size: 3rem; color: var(--border);
+    line-height: 1; flex-shrink: 0; width: 2rem;
+  }
+  .step-content h3 {
+    font-size: 1rem; font-weight: 700; margin-bottom: .5rem;
+    letter-spacing: -.01em;
+  }
+  .step-content p {
+    font-size: .875rem; color: var(--muted); line-height: 1.7; font-weight: 400;
+  }
+  .step-content code {
+    font-family: 'DM Mono', monospace;
+    font-size: .8rem; background: rgba(0,0,0,.06);
+    padding: .1rem .35rem; color: var(--ink);
+  }
+
+  /* ── CODE SECTION ────────────────────────────────── */
+  .code-section {
+    background: var(--code-bg);
+    padding: 6rem 4rem;
+  }
+  .code-section .section-num { color: rgba(200,245,100,.6); }
+  .code-section .section-title { color: var(--paper); }
+  .code-tabs {
+    display: flex; gap: 0; margin-top: 3rem;
+    border-bottom: 1px solid rgba(255,255,255,.1);
+  }
+  .code-tab {
+    font-family: 'DM Mono', monospace;
+    font-size: .75rem; letter-spacing: .08em; text-transform: uppercase;
+    padding: .75rem 1.5rem; cursor: pointer;
+    color: rgba(255,255,255,.4);
+    border-bottom: 2px solid transparent;
+    transition: color .2s;
+    background: none; border-top: none; border-left: none; border-right: none;
+    margin-bottom: -1px;
+  }
+  .code-tab.active { color: var(--relay); border-bottom-color: var(--relay); }
+  .code-block {
+    display: none;
+    background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255,255,255,.06);
+    border-top: none;
+    padding: 2.5rem;
+    overflow-x: auto;
+  }
+  .code-block.active { display: block; }
+  pre {
+    font-family: 'DM Mono', monospace;
+    font-size: .82rem; line-height: 1.8;
+    color: rgba(240,237,230,.75);
+    white-space: pre;
+  }
+  .kw  { color: #7dd3fc; }   /* keyword */
+  .cl  { color: #86efac; }   /* class/type */
+  .st  { color: #fda4af; }   /* string */
+  .cm  { color: #4b5563; font-style: italic; } /* comment */
+  .hl  { color: var(--relay); } /* highlight */
+
+  /* ── WHY SECTION ─────────────────────────────────── */
+  .why-section {
+    padding: 8rem 4rem;
+    border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6rem; align-items: start;
+  }
+  .why-section .section-num { color: var(--muted); }
+  .why-section .section-title { color: var(--ink); }
+  .why-left { position: sticky; top: 7rem; }
+  .why-left p {
+    font-size: 1.05rem; color: var(--muted); margin-top: 1.5rem;
+    line-height: 1.8; font-weight: 400;
+  }
+  .comparison { display: flex; flex-direction: column; gap: 1.5rem; }
+  .comp-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+    padding-bottom: 1.5rem; border-bottom: 1px solid var(--border);
+    opacity: 0; transform: translateY(12px);
+    transition: opacity .4s, transform .4s;
+  }
+  .comp-row.visible { opacity: 1; transform: translateY(0); }
+  .comp-row:nth-child(2) { transition-delay: .08s; }
+  .comp-row:nth-child(3) { transition-delay: .16s; }
+  .comp-row:nth-child(4) { transition-delay: .24s; }
+  .comp-row:nth-child(5) { transition-delay: .32s; }
+  .comp-row:last-child { border-bottom: none; }
+  .comp-bad, .comp-good {
+    font-size: .875rem; line-height: 1.6; font-weight: 400;
+  }
+  .comp-bad { color: var(--muted); }
+  .comp-bad::before { content: '✕  '; color: #f87171; font-weight: 700; }
+  .comp-good { color: var(--ink); }
+  .comp-good::before { content: '✓  '; color: var(--relay-dk); font-weight: 700; }
+  .comp-header {
+    font-family: 'DM Mono', monospace; font-size: .7rem;
+    letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); padding-bottom: .75rem;
+    border-bottom: 2px solid var(--border);
+  }
+
+  /* ── FOOTER ──────────────────────────────────────── */
+  footer {
+    background: var(--ink);
+    padding: 4rem;
+    display: flex; justify-content: space-between; align-items: center;
+    border-top: 4px solid var(--relay);
+  }
+  .footer-logo { font-size: 1.25rem; font-weight: 800; color: var(--paper); letter-spacing: -.02em; }
+  .footer-logo span { color: var(--relay); }
+  .footer-right {
+    font-family: 'DM Mono', monospace; font-size: .75rem;
+    color: rgba(240,237,230,.3); letter-spacing: .06em; text-align: right;
+  }
+
+  /* ── SCROLL OBSERVER INIT ────────────────────────── */
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; }
+    .hero-right { min-height: 50vh; }
+    .name-section, .arch-grid, .why-section { grid-template-columns: 1fr; gap: 3rem; }
+    .features-grid { grid-template-columns: 1fr; }
+    nav { padding: 1rem 1.5rem; }
+    .hero-left, .name-section, .how-section, .arch-section, .code-section, .why-section, footer { padding-left: 1.5rem; padding-right: 1.5rem; }
+    .why-left { position: static; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">
+    <span class="dot"></span>
+    Relay<span style="color:var(--muted);font-weight:400">.Inbox</span>
+  </div>
+  <div class="nav-links">
+    <a href="#how">How it works</a>
+    <a href="#features">Features</a>
+    <a href="#why">Why Relay</a>
+    <span class="nav-badge">v1.0.0</span>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-left">
+    <div class="hero-eyebrow">Inbox Pattern for .NET</div>
+    <h1>Never lose<br/><em>a message</em><br/>again.</h1>
+    <p class="hero-sub">
+      Relay.Inbox is a lightweight, plug-and-play inbox pattern for .NET 8+.
+      Raw ADO.NET. No ORM. Idempotency baked in. Dead-simple to test.
+    </p>
+    <div class="hero-actions">
+      <button class="btn-primary">dotnet add package Relay.Inbox</button>
+      <a href="#how" class="btn-ghost">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+        See how it works
+      </a>
+    </div>
+  </div>
+  <div class="hero-right">
+    <div class="flow-diagram">
+      <div class="flow-node">
+        <div class="flow-icon">📡</div>
+        <div class="flow-label">
+          <strong>External Source</strong>
+          WebSocket · Webhook · Kafka
+        </div>
+      </div>
+      <div class="flow-arrow">
+        <svg width="16" height="24" fill="none" viewBox="0 0 16 24"><path d="M8 0v20M2 14l6 6 6-6" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <div class="flow-node">
+        <div class="flow-icon">📥</div>
+        <div class="flow-label">
+          <strong>IInboxReceiver&lt;T&gt;</strong>
+          Deduplicate · Store safely
+        </div>
+      </div>
+      <div class="flow-arrow">
+        <svg width="16" height="24" fill="none" viewBox="0 0 16 24"><path d="M8 0v20M2 14l6 6 6-6" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <div class="flow-node">
+        <div class="flow-icon">🗄️</div>
+        <div class="flow-label">
+          <strong>SQL Inbox Table</strong>
+          Persisted · Indexed · Locked
+        </div>
+      </div>
+      <div class="flow-arrow">
+        <svg width="16" height="24" fill="none" viewBox="0 0 16 24"><path d="M8 0v20M2 14l6 6 6-6" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <div class="flow-node">
+        <div class="flow-icon">⚙️</div>
+        <div class="flow-label">
+          <strong>IInboxProcessor</strong>
+          Handle · Retry · Dead-letter
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- NAME SECTION -->
+<section class="name-section" id="name">
+  <div class="name-left">
+    <h2>Why is it called<br/><em>Relay?</em></h2>
+  </div>
+  <div class="name-etymology">
+    <div class="etymology-item">
+      <div class="etym-word">relay /rɪˈleɪ/ — verb</div>
+      <div class="etym-def"><strong>To receive and pass on</strong> information or a message. A relay doesn't originate — it faithfully carries what arrives to where it needs to go, without dropping it.</div>
+    </div>
+    <div class="etymology-item">
+      <div class="etym-word">relay race — noun</div>
+      <div class="etym-def">A race in which each runner carries a baton and <strong>hands it off</strong> to the next. The baton is never dropped. Relay.Inbox is the baton handoff between an external system and your business logic.</div>
+    </div>
+    <div class="etymology-item">
+      <div class="etym-word">relay station — noun</div>
+      <div class="etym-def">An intermediate station that <strong>receives a signal and retransmits it</strong>. The inbox is that station — it catches everything that arrives, holds it reliably, and lets your processor pick it up when ready.</div>
+    </div>
+    <div class="etymology-item">
+      <div class="etym-word">electrical relay — noun</div>
+      <div class="etym-def">A switch activated by a signal in one circuit to <strong>control another circuit</strong>. Relay.Inbox decouples reception from processing — the signal (message arrival) triggers storage, independently of when your logic runs.</div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how-section" id="how">
+  <div class="section-header">
+    <span class="section-num">01 /</span>
+    <h2 class="section-title">Features & how they work</h2>
+  </div>
+  <div class="features-grid">
+
+    <div class="feature-card">
+      <div class="feature-icon">🔑</div>
+      <div class="feature-name">Key derivation from data</div>
+      <div class="feature-desc">Your handler declares how to compute the idempotency key from the message itself. The same trade arriving 50 times produces the same key — stored once, processed once. The caller never has to think about it.</div>
+      <span class="feature-tag">IInboxHandler&lt;T&gt;</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🏷️</div>
+      <div class="feature-name">Named, isolated inboxes</div>
+      <div class="feature-desc">Register separate inboxes for separate concerns — "market-exchange", "payments", "notifications". Each is an isolated channel with its own handlers, options, and query scope. Zero cross-contamination.</div>
+      <span class="feature-tag">AddInbox("name")</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📥</div>
+      <div class="feature-name">Safe receive</div>
+      <div class="feature-desc">IInboxReceiver&lt;T&gt; is the single entry point at your boundary. It derives the key, checks the unique DB index atomically, and stores the message. Returns a result — never throws for duplicates. Tag each message with its source feed.</div>
+      <span class="feature-tag">IInboxReceiver&lt;T&gt;</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">⚙️</div>
+      <div class="feature-name">You control processing</div>
+      <div class="feature-desc">No hidden background threads. Call IInboxProcessor.ProcessPendingAsync() from a Hangfire job, Azure Function timer, minimal API endpoint, or a test. You decide the cadence, the batch size, and the trigger.</div>
+      <span class="feature-tag">IInboxProcessor</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔄</div>
+      <div class="feature-name">Retry & dead-lettering</div>
+      <div class="feature-desc">Failed messages are retried up to MaxRetries, with the retry count persisted in the DB. After exhausting retries the message is dead-lettered and the OnDeadLettered hook fires — perfect for alerting on-call or pushing to a queue.</div>
+      <span class="feature-tag">MaxRetries · OnDeadLettered</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔒</div>
+      <div class="feature-name">SKIP LOCKED — parallel safe</div>
+      <div class="feature-desc">The SQL fetch uses WITH (UPDLOCK, READPAST). Multiple processor instances running in parallel each claim a distinct batch at the DB level. No distributed locks. No coordination. Just scale out.</div>
+      <span class="feature-tag">UseSkipLocked</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <div class="feature-name">Inbox stats & health</div>
+      <div class="feature-desc">GetStatsAsync() returns pending, processing, processed, failed, and dead-lettered counts — plus the timestamp of the oldest pending message. Wire this directly into a health check endpoint or dashboard.</div>
+      <span class="feature-tag">IInboxQuery</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">♻️</div>
+      <div class="feature-name">Requeue dead letters</div>
+      <div class="feature-desc">Requeue a single dead-lettered message by ID, or bulk-requeue all of them with one call. Retry count resets to zero. Useful during incidents when a downstream dependency was temporarily unavailable.</div>
+      <span class="feature-tag">IInboxRequeue</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🧹</div>
+      <div class="feature-name">Purge old messages</div>
+      <div class="feature-desc">PurgeProcessedAsync() deletes successfully processed messages older than a given timespan. Run nightly to keep the table lean. Schema and indexes stay tight — no bloat creep over time.</div>
+      <span class="feature-tag">PurgeProcessedAsync</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔗</div>
+      <div class="feature-name">Distributed trace correlation</div>
+      <div class="feature-desc">TraceId is captured automatically from Activity.Current when a message is received. Your stored inbox rows are correlated with your distributed traces without any manual wiring — search by trace ID in your APM.</div>
+      <span class="feature-tag">TraceId · Activity.Current</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🪝</div>
+      <div class="feature-name">Lifecycle hooks</div>
+      <div class="feature-desc">OnProcessed, OnFailed, OnDeadLettered, OnDuplicate — async hooks on every state transition. Emit custom metrics, write audit logs, trigger alerts, or push to a secondary queue. Zero coupling to internals.</div>
+      <span class="feature-tag">InboxOptions</span>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔌</div>
+      <div class="feature-name">Swappable storage</div>
+      <div class="feature-desc">IInboxStore is the only interface the engine cares about. Ships with SqlInboxStore (raw ADO.NET, no ORM) and InMemoryInboxStore. Bring your own Postgres, MongoDB, EF Core, or Redis implementation.</div>
+      <span class="feature-tag">IInboxStore</span>
+    </div>
+
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section class="arch-section" id="arch">
+  <div class="section-header">
+    <span class="section-num">02 /</span>
+    <h2 class="section-title">Step by step</h2>
+  </div>
+  <div class="arch-grid">
+    <div class="arch-step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <h3>Message arrives at your boundary</h3>
+        <p>A WebSocket frame, a webhook POST, a Kafka message. You deserialize it to a typed record and call <code>IInboxReceiver&lt;T&gt;.ReceiveAsync(msg)</code>. That's your entire entry point.</p>
+      </div>
+    </div>
+    <div class="arch-step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <h3>Key is derived from the message data</h3>
+        <p>The handler's <code>GetIdempotencyKey(msg)</code> runs. The result is scoped to the inbox name — e.g. <code>market-exchange:trade:NYSE:TRD-9981</code>. No caller input required.</p>
+      </div>
+    </div>
+    <div class="arch-step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <h3>Duplicate check at the DB level</h3>
+        <p>A unique index on <code>IdempotencyKey</code> makes the duplicate check atomic and race-condition safe. Even if two threads arrive simultaneously with the same message, only one insert wins. The other gets a clean duplicate result.</p>
+      </div>
+    </div>
+    <div class="arch-step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <h3>Message stored with full metadata</h3>
+        <p>Status, source tag, <code>TraceId</code> from the active trace context, and <code>ReceivedAt</code> timestamp all written in a single insert. The message is now durable — a crash here loses nothing.</p>
+      </div>
+    </div>
+    <div class="arch-step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <h3>You trigger processing when ready</h3>
+        <p>Call <code>IInboxProcessor.ProcessPendingAsync("inbox-name")</code> from wherever fits. Batch size is configurable. <code>SKIP LOCKED</code> means multiple instances can run safely in parallel.</p>
+      </div>
+    </div>
+    <div class="arch-step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <h3>Handler runs, lifecycle hooks fire</h3>
+        <p>Message is deserialized back to the typed record and dispatched to your <code>IInboxHandler&lt;T&gt;.HandleAsync()</code>. On success, <code>OnProcessed</code> fires. On failure, retry count increments. On exhaustion, <code>OnDeadLettered</code> fires.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section class="code-section" id="code">
+  <div class="section-header">
+    <span class="section-num">03 /</span>
+    <h2 class="section-title">In practice</h2>
+  </div>
+  <div class="code-tabs">
+    <button class="code-tab active" onclick="showTab('handler')">Handler</button>
+    <button class="code-tab" onclick="showTab('register')">Register</button>
+    <button class="code-tab" onclick="showTab('receive')">Receive</button>
+    <button class="code-tab" onclick="showTab('process')">Process</button>
+    <button class="code-tab" onclick="showTab('test')">Test</button>
+  </div>
+
+  <div class="code-block active" id="tab-handler">
+<pre><span class="cm">// Your handler owns two things:</span>
+<span class="cm">// 1. How to derive the key from data</span>
+<span class="cm">// 2. What to do with the message</span>
+
+<span class="kw">public record</span> <span class="cl">TradeExecutedEvent</span>(
+    <span class="kw">string</span> Exchange,
+    <span class="kw">string</span> ExternalTradeId,
+    <span class="kw">string</span> Symbol,
+    <span class="kw">decimal</span> Price,
+    <span class="kw">decimal</span> Quantity);
+
+<span class="kw">public class</span> <span class="cl">TradeExecutedHandler</span> : <span class="cl">IInboxHandler</span>&lt;<span class="cl">TradeExecutedEvent</span>&gt;
+{
+    <span class="cm">// Same trade from same exchange = same key, always.</span>
+    <span class="cm">// Arriving 50 times = processed exactly once.</span>
+    <span class="kw">public string</span> <span class="hl">GetIdempotencyKey</span>(<span class="cl">TradeExecutedEvent</span> msg) =&gt;
+        <span class="st">$"trade:{msg.Exchange}:{msg.ExternalTradeId}"</span>;
+
+    <span class="kw">public async</span> <span class="cl">Task</span> HandleAsync(<span class="cl">TradeExecutedEvent</span> msg, <span class="cl">CancellationToken</span> ct)
+    {
+        <span class="cm">// your business logic — runs exactly once per unique trade</span>
+        <span class="kw">await</span> _portfolio.RecordTradeAsync(msg);
+    }
+}</pre>
+  </div>
+
+  <div class="code-block" id="tab-register">
+<pre>builder.Services
+    .<span class="hl">AddInbox</span>(<span class="st">"market-exchange"</span>, inbox =&gt; inbox
+        .WithHandler&lt;<span class="cl">TradeExecutedEvent</span>, <span class="cl">TradeExecutedHandler</span>&gt;()
+        .WithHandler&lt;<span class="cl">OrderFilledEvent</span>, <span class="cl">OrderFilledHandler</span>&gt;()
+        .WithMaxRetries(<span class="hl">5</span>)
+        .OnDeadLettered(<span class="kw">async</span> (msg, ex) =&gt;
+            <span class="kw">await</span> alerts.NotifyAsync(<span class="st">$"Dead: {msg.Type} {msg.Id}"</span>))
+        .OnProcessed(msg =&gt;
+            metrics.Increment(<span class="st">"inbox.processed"</span>)))
+
+    .<span class="hl">AddInbox</span>(<span class="st">"payments"</span>, inbox =&gt; inbox
+        .WithHandler&lt;<span class="cl">PaymentReceivedEvent</span>, <span class="cl">PaymentReceivedHandler</span>&gt;())
+
+    .<span class="hl">UseSqlInboxStore</span>(connectionString, opts =&gt;
+    {
+        opts.UseSkipLocked = <span class="kw">true</span>;   <span class="cm">// parallel-safe processing</span>
+        opts.AutoMigrateSchema = <span class="kw">true</span>; <span class="cm">// create table on startup</span>
+    });</pre>
+  </div>
+
+  <div class="code-block" id="tab-receive">
+<pre><span class="cm">// At your WebSocket/webhook/consumer boundary</span>
+<span class="kw">public class</span> <span class="cl">MarketFeedListener</span>(<span class="cl">IInboxReceiver</span>&lt;<span class="cl">TradeExecutedEvent</span>&gt; inbox)
+{
+    <span class="kw">public async</span> <span class="cl">Task</span> OnTradeAsync(<span class="cl">TradeExecutedEvent</span> trade)
+    {
+        <span class="kw">var</span> result = <span class="kw">await</span> inbox.<span class="hl">ReceiveAsync</span>(trade, source: <span class="st">"binance-ws"</span>);
+
+        <span class="kw">if</span> (result.WasDuplicate)
+            _log.LogDebug(<span class="st">"Duplicate ignored: {Id}"</span>, trade.ExternalTradeId);
+
+        <span class="cm">// That's it. Message is safe in the DB.</span>
+        <span class="cm">// No need to process it here — decouple receive from handle.</span>
+    }
+}</pre>
+  </div>
+
+  <div class="code-block" id="tab-process">
+<pre><span class="cm">// Option A: Minimal API endpoint (trigger via cron)</span>
+app.MapPost(<span class="st">"/inbox/process/{inbox}"</span>,
+    <span class="kw">async</span> (<span class="kw">string</span> inbox, <span class="cl">IInboxProcessor</span> processor) =&gt;
+        Results.Ok(<span class="kw">await</span> processor.<span class="hl">ProcessPendingAsync</span>(inbox, batchSize: <span class="hl">100</span>)));
+
+<span class="cm">// Option B: Hangfire recurring job</span>
+RecurringJob.AddOrUpdate&lt;<span class="cl">IInboxProcessor</span>&gt;(
+    <span class="st">"market-inbox"</span>,
+    p =&gt; p.<span class="hl">ProcessPendingAsync</span>(<span class="st">"market-exchange"</span>, <span class="hl">100</span>, <span class="cl">CancellationToken</span>.None),
+    Cron.Minutely());
+
+<span class="cm">// Inspect + manage</span>
+<span class="kw">var</span> stats   = <span class="kw">await</span> store.<span class="hl">GetStatsAsync</span>(<span class="st">"market-exchange"</span>);
+<span class="kw">var</span> dead    = <span class="kw">await</span> store.<span class="hl">GetDeadLetteredAsync</span>(<span class="st">"market-exchange"</span>);
+<span class="kw">await</span> store.<span class="hl">RequeueAllDeadLetteredAsync</span>(<span class="st">"market-exchange"</span>);
+<span class="kw">await</span> store.<span class="hl">PurgeProcessedAsync</span>(<span class="st">"market-exchange"</span>, TimeSpan.FromDays(<span class="hl">30</span>));</pre>
+  </div>
+
+  <div class="code-block" id="tab-test">
+<pre><span class="cm">// Zero infrastructure needed — InMemoryInboxStore ships in the package</span>
+[<span class="cl">Fact</span>]
+<span class="kw">public async</span> <span class="cl">Task</span> Trade_is_processed_exactly_once()
+{
+    <span class="kw">var</span> store    = <span class="kw">new</span> <span class="cl">InMemoryInboxStore</span>();
+    <span class="kw">var</span> handler  = <span class="kw">new</span> <span class="cl">FakeInboxHandler</span>&lt;<span class="cl">TradeExecutedEvent</span>&gt;(
+        t =&gt; <span class="st">$"trade:{t.Exchange}:{t.ExternalTradeId}"</span>);
+    <span class="kw">var</span> receiver = <span class="kw">new</span> <span class="cl">InboxReceiver</span>&lt;<span class="cl">TradeExecutedEvent</span>&gt;(store, handler, <span class="st">"market"</span>, <span class="kw">new</span>());
+
+    <span class="kw">var</span> trade = <span class="kw">new</span> <span class="cl">TradeExecutedEvent</span>(<span class="st">"NYSE"</span>, <span class="st">"TRD-001"</span>, <span class="st">"AAPL"</span>, <span class="hl">189.50m</span>, <span class="hl">100</span>);
+
+    <span class="kw">await</span> receiver.ReceiveAsync(trade);
+    <span class="kw">await</span> receiver.ReceiveAsync(trade); <span class="cm">// duplicate — silently dropped</span>
+
+    Assert.Single(<span class="hl">handler.Handled</span>); <span class="cm">// handled exactly once</span>
+    Assert.Equal(<span class="hl">1</span>, store.All.Count); <span class="cm">// stored exactly once</span>
+}</pre>
+  </div>
+</section>
+
+<!-- WHY -->
+<section class="why-section" id="why">
+  <div class="why-left">
+    <div class="section-header" style="flex-direction:column;align-items:flex-start;gap:.5rem;margin-bottom:1.5rem">
+      <span class="section-num">04 /</span>
+      <h2 class="section-title">Why use Relay?</h2>
+    </div>
+    <p>Most teams either skip the inbox pattern entirely and lose messages, or bolt on a heavy framework that brings more complexity than the problem it solves. Relay is the middle path.</p>
+  </div>
+  <div class="comparison">
+    <div class="comp-row">
+      <div class="comp-header">Without Relay</div>
+      <div class="comp-header">With Relay</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Process messages inline — if your handler throws, the message is gone forever</div>
+      <div class="comp-good">Messages hit the DB first. Handler failure means retry, not loss.</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Hand-roll idempotency checks in every handler, different each time</div>
+      <div class="comp-good">Key derivation lives on the handler contract — impossible to forget.</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Duplicate messages from flaky sources cause double-processing</div>
+      <div class="comp-good">DB-level unique index catches duplicates even under race conditions.</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Pull in MassTransit or NServiceBus — hundreds of concepts to learn</div>
+      <div class="comp-good">Four interfaces. One NuGet package. Zero broker required.</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Tests require a real database or complex mocking</div>
+      <div class="comp-good">InMemoryInboxStore ships in the package — test with zero infrastructure.</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Scale out processors = distributed lock nightmares</div>
+      <div class="comp-good">SKIP LOCKED makes parallel processors safe by default.</div>
+    </div>
+    <div class="comp-row">
+      <div class="comp-bad">Dead messages disappear silently — you find out from a customer</div>
+      <div class="comp-good">Dead-letter hook fires immediately. Requeue with one call.</div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">Relay<span>.Inbox</span></div>
+  <div class="footer-right">
+    MIT License · .NET 8+<br/>
+    Microsoft.Data.SqlClient · No ORM<br/>
+    Built for reliability
+  </div>
+</footer>
+
+<script>
+  // Tab switching
+  function showTab(name) {
+    document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.code-block').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById('tab-' + name).classList.add('active');
+  }
+
+  // Scroll observer for animations
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) e.target.classList.add('visible');
+    });
+  }, { threshold: 0.12 });
+
+  document.querySelectorAll(
+    '.etymology-item, .feature-card, .arch-step, .comp-row'
+  ).forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
