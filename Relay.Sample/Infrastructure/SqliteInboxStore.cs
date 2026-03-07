@@ -7,8 +7,10 @@ namespace Relay.Sample.Infrastructure;
 /// IInboxStore backed by SQLite via Microsoft.Data.Sqlite.
 /// Schema auto-created on startup via EnsureSchemaAsync (called by SqliteSchemaInitializer).
 /// </summary>
-public sealed class SqliteInboxStore(string connectionString) : IInboxStore
+public sealed class SqliteInboxStore(string connectionString, string tableName = "InboxMessages") : IInboxStore
 {
+    private readonly string _table = tableName;
+
     // -------------------------------------------------------------------------
     // Schema
     // -------------------------------------------------------------------------
@@ -17,8 +19,8 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
     {
         // SQLite stores GUIDs and datetimes as ISO-8601 TEXT.
         // No UNIQUEIDENTIFIER, NVARCHAR or SQL Server hints needed.
-        const string sql = """
-            CREATE TABLE IF NOT EXISTS InboxMessages (
+        var sql = $"""
+            CREATE TABLE IF NOT EXISTS [{_table}] (
                 Id              TEXT    NOT NULL PRIMARY KEY,
                 InboxName       TEXT    NOT NULL,
                 Type            TEXT    NOT NULL,
@@ -33,8 +35,8 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
                 Source          TEXT    NULL
             );
 
-            CREATE INDEX IF NOT EXISTS IX_InboxMessages_InboxName_Status
-                ON InboxMessages (InboxName, Status, ReceivedAt);
+            CREATE INDEX IF NOT EXISTS IX_{_table}_InboxName_Status
+                ON [{_table}] (InboxName, Status, ReceivedAt);
             """;
 
         await using var conn = await OpenAsync(ct);
@@ -48,7 +50,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
     public async Task<bool> ExistsAsync(string idempotencyKey, CancellationToken ct = default)
     {
-        const string sql = "SELECT 1 FROM InboxMessages WHERE IdempotencyKey = @key";
+        var sql = $"SELECT 1 FROM [{_table}] WHERE IdempotencyKey = @key";
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@key", idempotencyKey);
@@ -57,8 +59,8 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
     public async Task InsertAsync(InboxMessage message, CancellationToken ct = default)
     {
-        const string sql = """
-            INSERT INTO InboxMessages
+        var sql = $"""
+            INSERT INTO [{_table}]
                 (Id, InboxName, Type, IdempotencyKey, Payload, Status, ReceivedAt, TraceId, Source)
             VALUES
                 (@id, @inboxName, @type, @key, @payload, @status, @receivedAt, @traceId, @source)
@@ -66,15 +68,15 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",        message.Id.ToString());
-        cmd.Parameters.AddWithValue("@inboxName",  message.InboxName);
-        cmd.Parameters.AddWithValue("@type",       message.Type);
-        cmd.Parameters.AddWithValue("@key",        message.IdempotencyKey);
-        cmd.Parameters.AddWithValue("@payload",    message.Payload);
-        cmd.Parameters.AddWithValue("@status",     (int)message.Status);
+        cmd.Parameters.AddWithValue("@id", message.Id.ToString());
+        cmd.Parameters.AddWithValue("@inboxName", message.InboxName);
+        cmd.Parameters.AddWithValue("@type", message.Type);
+        cmd.Parameters.AddWithValue("@key", message.IdempotencyKey);
+        cmd.Parameters.AddWithValue("@payload", message.Payload);
+        cmd.Parameters.AddWithValue("@status", (int)message.Status);
         cmd.Parameters.AddWithValue("@receivedAt", message.ReceivedAt.ToString("O"));
-        cmd.Parameters.AddWithValue("@traceId",    (object?)message.TraceId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@source",     (object?)message.Source  ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@traceId", (object?)message.TraceId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@source", (object?)message.Source ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -88,7 +90,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         var sql = $"""
             SELECT Id, InboxName, Type, IdempotencyKey, Payload,
                    Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
-            FROM InboxMessages
+            FROM [{_table}]
             WHERE InboxName = @inbox
               AND Status IN ({(int)InboxMessageStatus.Pending}, {(int)InboxMessageStatus.Failed})
             ORDER BY ReceivedAt ASC
@@ -114,30 +116,30 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
     public async Task MarkFailedAsync(Guid id, string error, int retryCount, CancellationToken ct = default)
     {
-        const string sql = """
-            UPDATE InboxMessages
+        var sql = $"""
+            UPDATE [{_table}]
             SET Status = @status, Error = @error, RetryCount = @retry
             WHERE Id = @id
             """;
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",     id.ToString());
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         cmd.Parameters.AddWithValue("@status", (int)InboxMessageStatus.Failed);
-        cmd.Parameters.AddWithValue("@error",  error);
-        cmd.Parameters.AddWithValue("@retry",  retryCount);
+        cmd.Parameters.AddWithValue("@error", error);
+        cmd.Parameters.AddWithValue("@retry", retryCount);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task MarkDeadLetteredAsync(Guid id, string error, CancellationToken ct = default)
     {
-        const string sql = "UPDATE InboxMessages SET Status = @status, Error = @error WHERE Id = @id";
+        var sql = $"UPDATE [{_table}] SET Status = @status, Error = @error WHERE Id = @id";
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",     id.ToString());
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         cmd.Parameters.AddWithValue("@status", (int)InboxMessageStatus.DeadLettered);
-        cmd.Parameters.AddWithValue("@error",  error);
+        cmd.Parameters.AddWithValue("@error", error);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -151,8 +153,8 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         await using var conn = await OpenAsync(ct);
 
         var counts = new Dictionary<InboxMessageStatus, int>();
-        const string countSql = """
-            SELECT Status, COUNT(*) FROM InboxMessages
+        var countSql = $"""
+            SELECT Status, COUNT(*) FROM [{_table}]
             WHERE InboxName = @inbox GROUP BY Status
             """;
         await using (var cmd = new SqliteCommand(countSql, conn))
@@ -165,7 +167,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
         DateTime? oldestPending = null;
         var oldestSql = $"""
-            SELECT MIN(ReceivedAt) FROM InboxMessages
+            SELECT MIN(ReceivedAt) FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.Pending}
             """;
         await using (var cmd = new SqliteCommand(oldestSql, conn))
@@ -176,12 +178,12 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         }
 
         return new InboxStats(
-            InboxName:     inboxName,
-            Pending:       counts.GetValueOrDefault(InboxMessageStatus.Pending),
-            Processing:    counts.GetValueOrDefault(InboxMessageStatus.Processing),
-            Processed:     counts.GetValueOrDefault(InboxMessageStatus.Processed),
-            Failed:        counts.GetValueOrDefault(InboxMessageStatus.Failed),
-            DeadLettered:  counts.GetValueOrDefault(InboxMessageStatus.DeadLettered),
+            InboxName: inboxName,
+            Pending: counts.GetValueOrDefault(InboxMessageStatus.Pending),
+            Processing: counts.GetValueOrDefault(InboxMessageStatus.Processing),
+            Processed: counts.GetValueOrDefault(InboxMessageStatus.Processed),
+            Failed: counts.GetValueOrDefault(InboxMessageStatus.Failed),
+            DeadLettered: counts.GetValueOrDefault(InboxMessageStatus.DeadLettered),
             OldestPending: oldestPending);
     }
 
@@ -191,7 +193,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         var sql = $"""
             SELECT Id, InboxName, Type, IdempotencyKey, Payload,
                    Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
-            FROM InboxMessages
+            FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.DeadLettered}
             ORDER BY ReceivedAt DESC
             LIMIT @limit
@@ -210,7 +212,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         var sql = $"""
             SELECT Id, InboxName, Type, IdempotencyKey, Payload,
                    Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
-            FROM InboxMessages
+            FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.Failed}
             ORDER BY ReceivedAt DESC
             LIMIT @limit
@@ -228,7 +230,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
     {
         var cutoff = (DateTime.UtcNow - olderThan).ToString("O");
         var sql = $"""
-            DELETE FROM InboxMessages
+            DELETE FROM [{_table}]
             WHERE InboxName = @inbox
               AND Status = {(int)InboxMessageStatus.Processed}
               AND ProcessedAt < @cutoff
@@ -236,7 +238,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@inbox",  inboxName);
+        cmd.Parameters.AddWithValue("@inbox", inboxName);
         cmd.Parameters.AddWithValue("@cutoff", cutoff);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -248,7 +250,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
     public async Task<bool> RequeueAsync(Guid messageId, CancellationToken ct = default)
     {
         var sql = $"""
-            UPDATE InboxMessages
+            UPDATE [{_table}]
             SET Status = {(int)InboxMessageStatus.Pending}, Error = NULL, RetryCount = 0
             WHERE Id = @id
               AND Status IN ({(int)InboxMessageStatus.DeadLettered}, {(int)InboxMessageStatus.Failed})
@@ -263,7 +265,7 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
     public async Task<int> RequeueAllDeadLetteredAsync(string inboxName, CancellationToken ct = default)
     {
         var sql = $"""
-            UPDATE InboxMessages
+            UPDATE [{_table}]
             SET Status = {(int)InboxMessageStatus.Pending}, Error = NULL, RetryCount = 0
             WHERE InboxName = @inbox
               AND Status = {(int)InboxMessageStatus.DeadLettered}
@@ -283,12 +285,12 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
         Guid id, InboxMessageStatus status, CancellationToken ct, DateTime? processedAt = null)
     {
         var sql = processedAt.HasValue
-            ? "UPDATE InboxMessages SET Status = @status, ProcessedAt = @ts WHERE Id = @id"
-            : "UPDATE InboxMessages SET Status = @status WHERE Id = @id";
+            ? $"UPDATE [{_table}] SET Status = @status, ProcessedAt = @ts WHERE Id = @id"
+            : $"UPDATE [{_table}] SET Status = @status WHERE Id = @id";
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",     id.ToString());
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         cmd.Parameters.AddWithValue("@status", (int)status);
         if (processedAt.HasValue)
             cmd.Parameters.AddWithValue("@ts", processedAt.Value.ToString("O"));
@@ -307,18 +309,18 @@ public sealed class SqliteInboxStore(string connectionString) : IInboxStore
 
     private static InboxMessage MapRow(SqliteDataReader r) => new()
     {
-        Id             = Guid.Parse(r.GetString(0)),
-        InboxName      = r.GetString(1),
-        Type           = r.GetString(2),
+        Id = Guid.Parse(r.GetString(0)),
+        InboxName = r.GetString(1),
+        Type = r.GetString(2),
         IdempotencyKey = r.GetString(3),
-        Payload        = r.GetString(4),
-        Status         = (InboxMessageStatus)r.GetInt32(5),
-        ReceivedAt     = DateTime.Parse(r.GetString(6)),
-        ProcessedAt    = r.IsDBNull(7)  ? null : DateTime.Parse(r.GetString(7)),
-        Error          = r.IsDBNull(8)  ? null : r.GetString(8),
-        RetryCount     = r.GetInt32(9),
-        TraceId        = r.IsDBNull(10) ? null : r.GetString(10),
-        Source         = r.IsDBNull(11) ? null : r.GetString(11),
+        Payload = r.GetString(4),
+        Status = (InboxMessageStatus)r.GetInt32(5),
+        ReceivedAt = DateTime.Parse(r.GetString(6)),
+        ProcessedAt = r.IsDBNull(7) ? null : DateTime.Parse(r.GetString(7)),
+        Error = r.IsDBNull(8) ? null : r.GetString(8),
+        RetryCount = r.GetInt32(9),
+        TraceId = r.IsDBNull(10) ? null : r.GetString(10),
+        Source = r.IsDBNull(11) ? null : r.GetString(11),
     };
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct)

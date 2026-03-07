@@ -12,13 +12,22 @@ public static class ServiceCollectionExtensions
     /// Register a named inbox with its handlers and configuration.
     /// </summary>
     /// <example>
+    /// // Global store (all inboxes share one table):
     /// builder.Services
     ///     .AddInbox("market-exchange", inbox => inbox
     ///         .WithHandler&lt;TradeExecutedEvent, TradeExecutedHandler&gt;()
     ///         .WithHandler&lt;OrderFilledEvent, OrderFilledHandler&gt;()
     ///         .OnDeadLettered((msg, ex) => alertService.NotifyAsync(msg)))
-    ///     .UseSqlInboxStore("Server=.;Database=MyApp;...")
-    ///     .UseInMemoryInboxStore(); // for tests
+    ///     .UseSqlInboxStore("Server=.;Database=MyApp;...");
+    ///
+    /// // Per-inbox stores (each inbox gets its own table):
+    /// builder.Services
+    ///     .AddInbox("orders", inbox => inbox
+    ///         .WithHandler&lt;OrderPlaced, OrderHandler&gt;()
+    ///         .UseSqlStore("Server=.;Database=MyApp;...", o => o.TableName = "OrderInbox"))
+    ///     .AddInbox("payments", inbox => inbox
+    ///         .WithHandler&lt;PaymentReceived, PaymentHandler&gt;()
+    ///         .UseSqlStore("Server=.;Database=MyApp;...", o => o.TableName = "PaymentInbox"));
     /// </example>
     public static IServiceCollection AddInbox(
         this IServiceCollection services,
@@ -27,8 +36,8 @@ public static class ServiceCollectionExtensions
     {
         // Ensure shared singletons are registered once
         HandlerRegistry registry;
-        var existing = services.FirstOrDefault(d => d.ServiceType == typeof(HandlerRegistry));
-        if (existing == null)
+        var existingRegistry = services.FirstOrDefault(d => d.ServiceType == typeof(HandlerRegistry));
+        if (existingRegistry == null)
         {
             registry = new HandlerRegistry();
             services.AddSingleton(registry);
@@ -36,16 +45,30 @@ public static class ServiceCollectionExtensions
         }
         else
         {
-            registry = (HandlerRegistry)existing.ImplementationInstance!;
+            registry = (HandlerRegistry)existingRegistry.ImplementationInstance!;
         }
 
-        var builder = new InboxBuilder(services, inboxName, registry);
+        var storeResolver = EnsureStoreResolver(services);
+
+        var builder = new InboxBuilder(services, inboxName, registry, storeResolver);
         configure(builder);
         return services;
     }
 
+    private static InboxStoreResolver EnsureStoreResolver(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d => d.ServiceType == typeof(InboxStoreResolver));
+        if (existing != null)
+            return (InboxStoreResolver)existing.ImplementationInstance!;
+
+        var resolver = new InboxStoreResolver();
+        services.AddSingleton(resolver);
+        return resolver;
+    }
+
     /// <summary>
-    /// Use SQL Server as the inbox store (Microsoft.Data.SqlClient, no ORM).
+    /// Use SQL Server as the global/default inbox store (Microsoft.Data.SqlClient, no ORM).
+    /// All inboxes without a builder-level <c>.UseSqlStore()</c> will fall back to this store.
     /// </summary>
     public static IServiceCollection UseSqlInboxStore(
         this IServiceCollection services,
@@ -55,20 +78,23 @@ public static class ServiceCollectionExtensions
         var opts = new SqlInboxStoreOptions { ConnectionString = connectionString };
         configure?.Invoke(opts);
 
+        var store = new SqlInboxStore(opts);
+
         services.AddSingleton(opts);
-        services.AddSingleton<IInboxStore, SqlInboxStore>();
+        services.AddSingleton<IInboxStore>(store);
+
+        // Register as the global default in the resolver
+        var resolver = EnsureStoreResolver(services);
+        resolver.Register("*", store);
 
         if (opts.AutoMigrateSchema)
-        {
-            // Schema is created lazily on first use via IHostedService or manually
-            services.AddHostedService<InboxSchemaInitializer>();
-        }
+            EnsureSchemaInitializer(services);
 
         return services;
     }
 
     /// <summary>
-    /// Use in-memory store — ideal for tests and local development.
+    /// Use in-memory store as the global default — ideal for tests and local development.
     /// The InMemoryInboxStore instance is registered as a singleton so you can
     /// inject it directly in tests to inspect state.
     /// </summary>
@@ -77,7 +103,23 @@ public static class ServiceCollectionExtensions
         var store = new InMemoryInboxStore();
         services.AddSingleton<IInboxStore>(store);
         services.AddSingleton(store); // also register as concrete type for test access
+
+        var resolver = EnsureStoreResolver(services);
+        resolver.Register("*", store);
+
         return services;
+    }
+
+    private static void EnsureSchemaInitializer(IServiceCollection services) =>
+        EnsureSchemaInitializerInternal(services);
+
+    internal static void EnsureSchemaInitializerInternal(IServiceCollection services)
+    {
+        if (!services.Any(d => d.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService)
+                             && d.ImplementationType == typeof(InboxSchemaInitializer)))
+        {
+            services.AddHostedService<InboxSchemaInitializer>();
+        }
     }
 }
 
@@ -90,14 +132,57 @@ public sealed class InboxBuilder
     private readonly IServiceCollection services;
     private readonly string inboxName;
     private readonly HandlerRegistry registry;
+    private readonly InboxStoreResolver storeResolver;
 
     private InboxOptions _options = new();
 
-    internal InboxBuilder(IServiceCollection services, string inboxName, HandlerRegistry registry)
+    internal InboxBuilder(IServiceCollection services, string inboxName, HandlerRegistry registry, InboxStoreResolver storeResolver)
     {
         this.services = services;
         this.inboxName = inboxName;
         this.registry = registry;
+        this.storeResolver = storeResolver;
+    }
+
+    /// <summary>
+    /// Use a dedicated SQL Server store for this inbox (separate table).
+    /// Overrides the global store registered via <c>UseSqlInboxStore()</c> for this inbox only.
+    /// </summary>
+    public InboxBuilder UseSqlStore(string connectionString, Action<SqlInboxStoreOptions>? configure = null)
+    {
+        var opts = new SqlInboxStoreOptions { ConnectionString = connectionString };
+        configure?.Invoke(opts);
+
+        var store = new SqlInboxStore(opts);
+        storeResolver.Register(inboxName, store);
+
+        if (opts.AutoMigrateSchema)
+            ServiceCollectionExtensions.EnsureSchemaInitializerInternal(services);
+
+        return this;
+    }
+
+    /// <summary>
+    /// Use a dedicated in-memory store for this inbox.
+    /// Useful for testing individual inboxes in isolation.
+    /// </summary>
+    public InboxBuilder UseInMemoryStore()
+    {
+        var store = new InMemoryInboxStore();
+        storeResolver.Register(inboxName, store);
+        return this;
+    }
+
+    /// <summary>
+    /// Use a custom <see cref="IInboxStore"/> implementation for this inbox.
+    /// Overrides the global store for this inbox only.
+    /// The store's <c>EnsureSchemaAsync</c> will be called automatically on startup.
+    /// </summary>
+    public InboxBuilder UseStore(IInboxStore store)
+    {
+        storeResolver.Register(inboxName, store);
+        ServiceCollectionExtensions.EnsureSchemaInitializerInternal(services);
+        return this;
     }
 
     /// <summary>Register a handler for a message type in this inbox.</summary>
@@ -106,10 +191,12 @@ public sealed class InboxBuilder
     {
         services.AddScoped<IInboxHandler<TMessage>, THandler>();
 
-        // Register the receiver for this specific message type
+        // Register the receiver for this specific message type.
+        // The store is resolved by inbox name at runtime via the resolver.
         services.AddScoped<IInboxReceiver<TMessage>>(sp =>
         {
-            var store   = sp.GetRequiredService<IInboxStore>();
+            var resolver = sp.GetRequiredService<InboxStoreResolver>();
+            var store = resolver.Resolve(inboxName);
             var handler = sp.GetRequiredService<IInboxHandler<TMessage>>();
             return new InboxReceiver<TMessage>(store, handler, inboxName, _options);
         });
@@ -164,13 +251,15 @@ public sealed class InboxBuilder
 // Schema initializer
 // -------------------------------------------------------------------------
 
-internal sealed class InboxSchemaInitializer(IInboxStore store, ILogger<InboxSchemaInitializer> logger)
+internal sealed class InboxSchemaInitializer(InboxStoreResolver storeResolver, ILogger<InboxSchemaInitializer> logger)
     : Microsoft.Extensions.Hosting.IHostedService
 {
     public async Task StartAsync(CancellationToken ct)
     {
-        logger.LogInformation("Ensuring inbox schema exists...");
-        await store.EnsureSchemaAsync(ct);
+        var stores = storeResolver.GetAll();
+        logger.LogInformation("Ensuring inbox schema exists for {Count} store(s)...", stores.Count);
+        foreach (var store in stores)
+            await store.EnsureSchemaAsync(ct);
         logger.LogInformation("Inbox schema ready.");
     }
 

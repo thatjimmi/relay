@@ -15,6 +15,7 @@ var connStr = $"Data Source={builder.Configuration["Relay:Database"] ?? "relay-s
 builder.Services
     .AddInbox("orders", inbox => inbox
         .WithHandler<OrderPlaced, OrderPlacedHandler>()
+        .UseSqliteStore(connStr)
         .WithOptions(o =>
         {
             // Automatically sets a correlation context so that any outbox messages
@@ -35,17 +36,13 @@ builder.Services
     .AddOutbox("orders", outbox => outbox
         .WithPublisher<OrderFulfillmentRequested, FulfillmentPublisher>()
         .WithPublisher<OrderConfirmationSent, ConfirmationPublisher>()
+        .UseSqliteStore(connStr)
         .OnDeadLettered((msg, ex) =>
         {
             Console.Error.WriteLine(
                 $"[DEAD LETTER] outbox={msg.OutboxName} type={msg.Type} error={ex.Message}");
             return Task.CompletedTask;
         }));
-
-// ── Infrastructure ────────────────────────────────────────────────────────
-// Registers IInboxStore + IOutboxStore (SQLite) and initialises the schema
-// via a hosted service that runs before Kestrel accepts connections.
-builder.Services.AddSqliteRelayStores(connStr);
 
 // ── Background workers ────────────────────────────────────────────────────
 // InboxWorker  – processes pending inbox messages on a PeriodicTimer.
@@ -84,11 +81,11 @@ app.MapPost("/orders", async (
 // GET /stats
 // Current inbox and outbox stats for the "orders" channel.
 app.MapGet("/stats", async (
-    IInboxStore  inboxStore,
+    IInboxStore inboxStore,
     IOutboxStore outboxStore,
     CancellationToken ct) =>
 {
-    var inbox  = await inboxStore.GetStatsAsync("orders", ct);
+    var inbox = await inboxStore.GetStatsAsync("orders", ct);
     var outbox = await outboxStore.GetStatsAsync("orders", ct);
     return Results.Ok(new { inbox, outbox });
 });
@@ -137,7 +134,7 @@ app.MapPost("/demo/seed", async (
         results.Add(new
         {
             orderId = o.OrderId,
-            status  = r.WasDuplicate ? "duplicate" : "accepted",
+            status = r.WasDuplicate ? "duplicate" : "accepted",
             messageId = r.MessageId,
         });
     }

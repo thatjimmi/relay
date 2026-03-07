@@ -3,7 +3,7 @@ using Relay.Outbox.Core;
 
 namespace Relay.Outbox.Internal;
 
-internal sealed class OutboxWriter(IOutboxStore store) : IOutboxWriter
+internal sealed class OutboxWriter(OutboxStoreResolver storeResolver) : IOutboxWriter
 {
     public Task<OutboxWriteResult> WriteAsync<TMessage>(
         TMessage message,
@@ -34,14 +34,16 @@ internal sealed class OutboxWriter(IOutboxStore store) : IOutboxWriter
     {
         ArgumentNullException.ThrowIfNull(message);
 
+        var store = storeResolver.Resolve(outboxName);
+
         var outboxMessage = new OutboxMessage
         {
-            OutboxName   = outboxName,
-            Type         = typeof(TMessage).Name,
-            Payload      = JsonSerializer.Serialize(message),
-            Destination  = destination,
+            OutboxName = outboxName,
+            Type = typeof(TMessage).Name,
+            Payload = JsonSerializer.Serialize(message),
+            Destination = destination,
             ScheduledFor = scheduledFor,
-            TraceId      = System.Diagnostics.Activity.Current?.TraceId.ToString(),
+            TraceId = System.Diagnostics.Activity.Current?.TraceId.ToString(),
             // Capture correlation from ambient context if set by inbox processor
             CorrelationId = OutboxCorrelationContext.Current,
         };

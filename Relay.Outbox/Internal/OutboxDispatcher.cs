@@ -5,7 +5,7 @@ using Relay.Outbox.Core;
 namespace Relay.Outbox.Internal;
 
 internal sealed class OutboxDispatcher(
-    IOutboxStore store,
+    OutboxStoreResolver storeResolver,
     PublisherRegistry registry,
     IServiceProvider sp,
     OutboxOptions options,
@@ -16,6 +16,7 @@ internal sealed class OutboxDispatcher(
         int batchSize = 50,
         CancellationToken ct = default)
     {
+        var store = storeResolver.Resolve(outboxName);
         var messages = await store.GetPendingAsync(outboxName, batchSize, ct);
         var failures = new List<OutboxFailure>();
         var published = 0;
@@ -76,8 +77,8 @@ internal sealed class OutboxDispatcher(
         return new OutboxDispatchResult
         {
             Published = published,
-            Failed    = failures.Count,
-            Failures  = failures
+            Failed = failures.Count,
+            Failures = failures
         };
     }
 

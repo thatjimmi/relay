@@ -230,6 +230,61 @@ services.UseSqlInboxStore(connectionString, o =>
 });
 ```
 
+### Per-Inbox / Per-Outbox Store Isolation
+
+By default, all inboxes share one table and all outboxes share one table. When you need **physical isolation** — separate tables, databases, or even storage engines per inbox/outbox — register a store at the builder level:
+
+**SQL Server — each inbox/outbox with its own table:**
+
+```csharp
+builder.Services
+    .AddInbox("orders", inbox => inbox
+        .WithHandler<OrderPlaced, OrderPlacedHandler>()
+        .UseSqlStore(connectionString, o => o.TableName = "OrderInbox"))
+    .AddInbox("payments", inbox => inbox
+        .WithHandler<PaymentReceived, PaymentHandler>()
+        .UseSqlStore(connectionString, o => o.TableName = "PaymentInbox"));
+
+builder.Services
+    .AddOutbox("orders", outbox => outbox
+        .WithPublisher<OrderConfirmed, OrderPublisher>()
+        .UseSqlStore(connectionString, o => o.TableName = "OrderOutbox"))
+    .AddOutbox("payments", outbox => outbox
+        .WithPublisher<PaymentProcessed, PaymentPublisher>()
+        .UseSqlStore(connectionString, o => o.TableName = "PaymentOutbox"));
+```
+
+**Custom store — use any `IInboxStore` / `IOutboxStore` implementation:**
+
+```csharp
+builder.Services.AddInbox("orders", inbox => inbox
+    .WithHandler<OrderPlaced, OrderPlacedHandler>()
+    .UseStore(new SqliteInboxStore(connStr, "OrderInboxMessages")));
+
+builder.Services.AddOutbox("orders", outbox => outbox
+    .WithPublisher<OrderConfirmed, OrderPublisher>()
+    .UseStore(new SqliteOutboxStore(connStr, "OrderOutboxMessages")));
+```
+
+**Mixed mode — global default + per-inbox overrides:**
+
+```csharp
+// Global default for all inboxes/outboxes
+builder.Services.UseSqlInboxStore(connectionString);
+builder.Services.UseSqlOutboxStore(connectionString);
+
+// Override just the payments inbox with its own table
+builder.Services.AddInbox("payments", inbox => inbox
+    .WithHandler<PaymentReceived, PaymentHandler>()
+    .UseSqlStore(connectionString, o => o.TableName = "PaymentInbox"));
+
+// The "orders" inbox continues to use the global default table
+builder.Services.AddInbox("orders", inbox => inbox
+    .WithHandler<OrderPlaced, OrderPlacedHandler>());
+```
+
+Schema initialisation runs automatically on startup for all registered stores.
+
 ---
 
 ## Dead Letters and Requeue

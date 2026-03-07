@@ -23,6 +23,7 @@ var host = new HostBuilder()
         // ── Inbox ─────────────────────────────────────────────────────────
         services.AddInbox("orders", inbox => inbox
             .WithHandler<OrderPlaced, OrderPlacedHandler>()
+            .UseSqliteStore(connStr, "OrderInboxMessages")
             .WithOptions(o =>
             {
                 o.CorrelationScope = OutboxCorrelationContext.Set;
@@ -39,6 +40,7 @@ var host = new HostBuilder()
         services.AddOutbox("orders", outbox => outbox
             .WithPublisher<OrderFulfillmentRequested, FulfillmentPublisher>()
             .WithPublisher<OrderConfirmationSent, ConfirmationPublisher>()
+            .UseSqliteStore(connStr, "OrderOutboxMessages")
             .OnDeadLettered((msg, ex) =>
             {
                 Console.Error.WriteLine(
@@ -46,10 +48,6 @@ var host = new HostBuilder()
                 return Task.CompletedTask;
             }));
 
-        // ── Infrastructure ────────────────────────────────────────────────
-        // Registers IInboxStore + IOutboxStore (SQLite) and runs EnsureSchemaAsync
-        // via a hosted service before the first function invocation is served.
-        services.AddSqliteRelayStores(connStr);
     })
     .Build();
 

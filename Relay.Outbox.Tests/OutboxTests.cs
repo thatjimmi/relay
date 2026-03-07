@@ -20,8 +20,10 @@ public class OutboxWriterTests
 {
     private static (InMemoryOutboxStore store, OutboxWriter writer) Build()
     {
-        var store  = new InMemoryOutboxStore();
-        var writer = new OutboxWriter(store);
+        var store = new InMemoryOutboxStore();
+        var resolver = new OutboxStoreResolver();
+        resolver.Register("*", store);
+        var writer = new OutboxWriter(resolver);
         return (store, writer);
     }
 
@@ -138,18 +140,20 @@ public class OutboxDispatcherTests
                     OutboxDispatcher dispatcher, FakeOutboxPublisher<TradeConfirmedEvent> publisher)
         Build(OutboxOptions? options = null)
     {
-        var store     = new InMemoryOutboxStore();
-        var writer    = new OutboxWriter(store);
-        var opts      = options ?? new OutboxOptions();
+        var store = new InMemoryOutboxStore();
+        var resolver = new OutboxStoreResolver();
+        resolver.Register("*", store);
+        var writer = new OutboxWriter(resolver);
+        var opts = options ?? new OutboxOptions();
         var publisher = new FakeOutboxPublisher<TradeConfirmedEvent>();
-        var registry  = new PublisherRegistry();
+        var registry = new PublisherRegistry();
         registry.Register("market-exchange", typeof(TradeConfirmedEvent));
 
         var services = new ServiceCollection();
         services.AddSingleton<IOutboxPublisher<TradeConfirmedEvent>>(publisher);
         var sp = services.BuildServiceProvider();
 
-        var dispatcher = new OutboxDispatcher(store, registry, sp, opts,
+        var dispatcher = new OutboxDispatcher(resolver, registry, sp, opts,
             NullLogger<OutboxDispatcher>.Instance);
 
         return (store, writer, dispatcher, publisher);
@@ -224,15 +228,17 @@ public class OutboxDispatcherTests
     [Fact]
     public async Task Failed_publisher_increments_retry_count()
     {
-        var store     = new InMemoryOutboxStore();
-        var writer    = new OutboxWriter(store);
-        var opts      = new OutboxOptions { MaxRetries = 5 };
-        var failing   = new AlwaysFailingPublisher<TradeConfirmedEvent>();
-        var registry  = new PublisherRegistry();
+        var store = new InMemoryOutboxStore();
+        var resolver = new OutboxStoreResolver();
+        resolver.Register("*", store);
+        var writer = new OutboxWriter(resolver);
+        var opts = new OutboxOptions { MaxRetries = 5 };
+        var failing = new AlwaysFailingPublisher<TradeConfirmedEvent>();
+        var registry = new PublisherRegistry();
         registry.Register("market-exchange", typeof(TradeConfirmedEvent));
-        var services  = new ServiceCollection();
+        var services = new ServiceCollection();
         services.AddSingleton<IOutboxPublisher<TradeConfirmedEvent>>(failing);
-        var dispatcher = new OutboxDispatcher(store, registry, services.BuildServiceProvider(),
+        var dispatcher = new OutboxDispatcher(resolver, registry, services.BuildServiceProvider(),
             opts, NullLogger<OutboxDispatcher>.Instance);
 
         await writer.WriteAsync(NewEvent(), "market-exchange");
@@ -246,19 +252,21 @@ public class OutboxDispatcherTests
     public async Task Dead_letters_after_max_retries()
     {
         var deadLettered = new List<OutboxMessage>();
-        var store     = new InMemoryOutboxStore();
-        var writer    = new OutboxWriter(store);
-        var opts      = new OutboxOptions
+        var store = new InMemoryOutboxStore();
+        var resolver = new OutboxStoreResolver();
+        resolver.Register("*", store);
+        var writer = new OutboxWriter(resolver);
+        var opts = new OutboxOptions
         {
             MaxRetries = 3,
             OnDeadLettered = (msg, _) => { deadLettered.Add(msg); return Task.CompletedTask; }
         };
-        var failing   = new AlwaysFailingPublisher<TradeConfirmedEvent>();
-        var registry  = new PublisherRegistry();
+        var failing = new AlwaysFailingPublisher<TradeConfirmedEvent>();
+        var registry = new PublisherRegistry();
         registry.Register("market-exchange", typeof(TradeConfirmedEvent));
-        var services  = new ServiceCollection();
+        var services = new ServiceCollection();
         services.AddSingleton<IOutboxPublisher<TradeConfirmedEvent>>(failing);
-        var dispatcher = new OutboxDispatcher(store, registry, services.BuildServiceProvider(),
+        var dispatcher = new OutboxDispatcher(resolver, registry, services.BuildServiceProvider(),
             opts, NullLogger<OutboxDispatcher>.Instance);
 
         await writer.WriteAsync(NewEvent(), "market-exchange");
@@ -272,15 +280,17 @@ public class OutboxDispatcherTests
     [Fact]
     public async Task Requeue_resets_dead_lettered_to_pending()
     {
-        var store     = new InMemoryOutboxStore();
-        var writer    = new OutboxWriter(store);
-        var opts      = new OutboxOptions { MaxRetries = 1 };
-        var failing   = new AlwaysFailingPublisher<TradeConfirmedEvent>();
-        var registry  = new PublisherRegistry();
+        var store = new InMemoryOutboxStore();
+        var resolver = new OutboxStoreResolver();
+        resolver.Register("*", store);
+        var writer = new OutboxWriter(resolver);
+        var opts = new OutboxOptions { MaxRetries = 1 };
+        var failing = new AlwaysFailingPublisher<TradeConfirmedEvent>();
+        var registry = new PublisherRegistry();
         registry.Register("market-exchange", typeof(TradeConfirmedEvent));
-        var services  = new ServiceCollection();
+        var services = new ServiceCollection();
         services.AddSingleton<IOutboxPublisher<TradeConfirmedEvent>>(failing);
-        var dispatcher = new OutboxDispatcher(store, registry, services.BuildServiceProvider(),
+        var dispatcher = new OutboxDispatcher(resolver, registry, services.BuildServiceProvider(),
             opts, NullLogger<OutboxDispatcher>.Instance);
 
         await writer.WriteAsync(NewEvent(), "market-exchange");

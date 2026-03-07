@@ -5,7 +5,7 @@ using Relay.Inbox.Core;
 namespace Relay.Inbox.Internal;
 
 internal sealed class InboxProcessor(
-    IInboxStore store,
+    InboxStoreResolver storeResolver,
     HandlerRegistry registry,
     IServiceProvider sp,
     InboxOptions options,
@@ -16,6 +16,7 @@ internal sealed class InboxProcessor(
         int batchSize = 50,
         CancellationToken ct = default)
     {
+        var store = storeResolver.Resolve(inboxName);
         var messages = await store.GetPendingAsync(inboxName, batchSize, ct);
         var failures = new List<InboxFailure>();
         var processed = 0;

@@ -54,3 +54,8 @@ TestResult.xml
 nunit-*.xml
 
 .claude
+AzuriteConfig
+__azurite*
+__blobstorage*
+__queuestorage*
+__tablestorage*

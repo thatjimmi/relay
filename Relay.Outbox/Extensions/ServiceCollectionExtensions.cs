@@ -13,12 +13,22 @@ public static class ServiceCollectionExtensions
     /// Register a named outbox with its publishers and configuration.
     /// </summary>
     /// <example>
+    /// // Global store (all outboxes share one table):
     /// builder.Services
     ///     .AddOutbox("market-exchange", outbox => outbox
     ///         .WithPublisher&lt;TradeConfirmedEvent, RabbitMqTradePublisher&gt;()
     ///         .WithPublisher&lt;PositionUpdatedEvent, RabbitMqPositionPublisher&gt;()
     ///         .OnDeadLettered((msg, ex) => alerts.NotifyAsync(msg)))
     ///     .UseSqlOutboxStore("Server=.;Database=MyApp;...");
+    ///
+    /// // Per-outbox stores (each outbox gets its own table):
+    /// builder.Services
+    ///     .AddOutbox("orders", outbox => outbox
+    ///         .WithPublisher&lt;OrderConfirmed, OrderPublisher&gt;()
+    ///         .UseSqlStore("Server=.;Database=MyApp;...", o => o.TableName = "OrderOutbox"))
+    ///     .AddOutbox("payments", outbox => outbox
+    ///         .WithPublisher&lt;PaymentProcessed, PaymentPublisher&gt;()
+    ///         .UseSqlStore("Server=.;Database=MyApp;...", o => o.TableName = "PaymentOutbox"));
     /// </example>
     public static IServiceCollection AddOutbox(
         this IServiceCollection services,
@@ -26,8 +36,8 @@ public static class ServiceCollectionExtensions
         Action<OutboxBuilder> configure)
     {
         PublisherRegistry registry;
-        var existing = services.FirstOrDefault(d => d.ServiceType == typeof(PublisherRegistry));
-        if (existing == null)
+        var existingRegistry = services.FirstOrDefault(d => d.ServiceType == typeof(PublisherRegistry));
+        if (existingRegistry == null)
         {
             registry = new PublisherRegistry();
             services.AddSingleton(registry);
@@ -36,15 +46,31 @@ public static class ServiceCollectionExtensions
         }
         else
         {
-            registry = (PublisherRegistry)existing.ImplementationInstance!;
+            registry = (PublisherRegistry)existingRegistry.ImplementationInstance!;
         }
 
-        var builder = new OutboxBuilder(services, outboxName, registry);
+        var storeResolver = EnsureStoreResolver(services);
+
+        var builder = new OutboxBuilder(services, outboxName, registry, storeResolver);
         configure(builder);
         return services;
     }
 
-    /// <summary>Use SQL Server as the outbox store (raw ADO.NET, no ORM).</summary>
+    private static OutboxStoreResolver EnsureStoreResolver(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d => d.ServiceType == typeof(OutboxStoreResolver));
+        if (existing != null)
+            return (OutboxStoreResolver)existing.ImplementationInstance!;
+
+        var resolver = new OutboxStoreResolver();
+        services.AddSingleton(resolver);
+        return resolver;
+    }
+
+    /// <summary>
+    /// Use SQL Server as the global/default outbox store (raw ADO.NET, no ORM).
+    /// All outboxes without a builder-level <c>.UseSqlStore()</c> will fall back to this store.
+    /// </summary>
     public static IServiceCollection UseSqlOutboxStore(
         this IServiceCollection services,
         string connectionString,
@@ -53,17 +79,22 @@ public static class ServiceCollectionExtensions
         var opts = new SqlOutboxStoreOptions { ConnectionString = connectionString };
         configure?.Invoke(opts);
 
+        var store = new SqlOutboxStore(opts);
+
         services.AddSingleton(opts);
-        services.AddSingleton<IOutboxStore, SqlOutboxStore>();
+        services.AddSingleton<IOutboxStore>(store);
+
+        var resolver = EnsureStoreResolver(services);
+        resolver.Register("*", store);
 
         if (opts.AutoMigrateSchema)
-            services.AddHostedService<OutboxSchemaInitializer>();
+            EnsureSchemaInitializer(services);
 
         return services;
     }
 
     /// <summary>
-    /// Use in-memory store — for tests and local development.
+    /// Use in-memory store as the global default — for tests and local development.
     /// Registered as singleton so test classes can inject it directly to inspect state.
     /// </summary>
     public static IServiceCollection UseInMemoryOutboxStore(this IServiceCollection services)
@@ -71,7 +102,23 @@ public static class ServiceCollectionExtensions
         var store = new InMemoryOutboxStore();
         services.AddSingleton<IOutboxStore>(store);
         services.AddSingleton(store);
+
+        var resolver = EnsureStoreResolver(services);
+        resolver.Register("*", store);
+
         return services;
+    }
+
+    private static void EnsureSchemaInitializer(IServiceCollection services) =>
+        EnsureSchemaInitializerInternal(services);
+
+    internal static void EnsureSchemaInitializerInternal(IServiceCollection services)
+    {
+        if (!services.Any(d => d.ServiceType == typeof(IHostedService)
+                             && d.ImplementationType == typeof(OutboxSchemaInitializer)))
+        {
+            services.AddHostedService<OutboxSchemaInitializer>();
+        }
     }
 }
 
@@ -84,18 +131,61 @@ public sealed class OutboxBuilder
     private readonly IServiceCollection services;
     private readonly string outboxName;
     private readonly PublisherRegistry registry;
+    private readonly OutboxStoreResolver storeResolver;
 
     private readonly OutboxOptions _options = new();
 
-    internal OutboxBuilder(IServiceCollection services, string outboxName, PublisherRegistry registry)
+    internal OutboxBuilder(IServiceCollection services, string outboxName, PublisherRegistry registry, OutboxStoreResolver storeResolver)
     {
         this.services = services;
         this.outboxName = outboxName;
         this.registry = registry;
+        this.storeResolver = storeResolver;
 
         // Register the options instance now; hook methods mutate the same reference,
         // so DI will always see the fully-configured object.
         services.AddSingleton(_options);
+    }
+
+    /// <summary>
+    /// Use a dedicated SQL Server store for this outbox (separate table).
+    /// Overrides the global store registered via <c>UseSqlOutboxStore()</c> for this outbox only.
+    /// </summary>
+    public OutboxBuilder UseSqlStore(string connectionString, Action<SqlOutboxStoreOptions>? configure = null)
+    {
+        var opts = new SqlOutboxStoreOptions { ConnectionString = connectionString };
+        configure?.Invoke(opts);
+
+        var store = new SqlOutboxStore(opts);
+        storeResolver.Register(outboxName, store);
+
+        if (opts.AutoMigrateSchema)
+            ServiceCollectionExtensions.EnsureSchemaInitializerInternal(services);
+
+        return this;
+    }
+
+    /// <summary>
+    /// Use a dedicated in-memory store for this outbox.
+    /// Useful for testing individual outboxes in isolation.
+    /// </summary>
+    public OutboxBuilder UseInMemoryStore()
+    {
+        var store = new InMemoryOutboxStore();
+        storeResolver.Register(outboxName, store);
+        return this;
+    }
+
+    /// <summary>
+    /// Use a custom <see cref="IOutboxStore"/> implementation for this outbox.
+    /// Overrides the global store for this outbox only.
+    /// The store's <c>EnsureSchemaAsync</c> will be called automatically on startup.
+    /// </summary>
+    public OutboxBuilder UseStore(IOutboxStore store)
+    {
+        storeResolver.Register(outboxName, store);
+        ServiceCollectionExtensions.EnsureSchemaInitializerInternal(services);
+        return this;
     }
 
     /// <summary>Register a publisher for a message type in this outbox.</summary>
@@ -142,13 +232,15 @@ public sealed class OutboxBuilder
 // Schema initializer
 // -------------------------------------------------------------------------
 
-internal sealed class OutboxSchemaInitializer(IOutboxStore store, ILogger<OutboxSchemaInitializer> logger)
+internal sealed class OutboxSchemaInitializer(OutboxStoreResolver storeResolver, ILogger<OutboxSchemaInitializer> logger)
     : IHostedService
 {
     public async Task StartAsync(CancellationToken ct)
     {
-        logger.LogInformation("Ensuring outbox schema exists...");
-        await store.EnsureSchemaAsync(ct);
+        var stores = storeResolver.GetAll();
+        logger.LogInformation("Ensuring outbox schema exists for {Count} store(s)...", stores.Count);
+        foreach (var store in stores)
+            await store.EnsureSchemaAsync(ct);
         logger.LogInformation("Outbox schema ready.");
     }
 

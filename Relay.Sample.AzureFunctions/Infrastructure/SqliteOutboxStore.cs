@@ -7,16 +7,18 @@ namespace Relay.Sample.AzureFunctions.Infrastructure;
 /// IOutboxStore backed by SQLite via Microsoft.Data.Sqlite.
 /// Schema auto-created on startup via EnsureSchemaAsync (called by SqliteSchemaInitializer).
 /// </summary>
-public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
+public sealed class SqliteOutboxStore(string connectionString, string tableName = "OutboxMessages") : IOutboxStore
 {
+    private readonly string _table = tableName;
+
     // -------------------------------------------------------------------------
     // Schema
     // -------------------------------------------------------------------------
 
     public async Task EnsureSchemaAsync(CancellationToken ct = default)
     {
-        const string sql = """
-            CREATE TABLE IF NOT EXISTS OutboxMessages (
+        var sql = $"""
+            CREATE TABLE IF NOT EXISTS [{_table}] (
                 Id              TEXT    NOT NULL PRIMARY KEY,
                 OutboxName      TEXT    NOT NULL,
                 Type            TEXT    NOT NULL,
@@ -32,11 +34,11 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
                 ScheduledFor    TEXT    NULL
             );
 
-            CREATE INDEX IF NOT EXISTS IX_OutboxMessages_OutboxName_Status
-                ON OutboxMessages (OutboxName, Status, CreatedAt);
+            CREATE INDEX IF NOT EXISTS IX_{_table}_OutboxName_Status
+                ON [{_table}] (OutboxName, Status, CreatedAt);
 
-            CREATE INDEX IF NOT EXISTS IX_OutboxMessages_CorrelationId
-                ON OutboxMessages (CorrelationId)
+            CREATE INDEX IF NOT EXISTS IX_{_table}_CorrelationId
+                ON [{_table}] (CorrelationId)
                 WHERE CorrelationId IS NOT NULL;
             """;
 
@@ -51,8 +53,8 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
     public async Task InsertAsync(OutboxMessage message, CancellationToken ct = default)
     {
-        const string sql = """
-            INSERT INTO OutboxMessages
+        var sql = $"""
+            INSERT INTO [{_table}]
                 (Id, OutboxName, Type, Payload, CorrelationId, TraceId,
                  Destination, Status, CreatedAt, ScheduledFor)
             VALUES
@@ -62,16 +64,16 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",            message.Id.ToString());
-        cmd.Parameters.AddWithValue("@outboxName",    message.OutboxName);
-        cmd.Parameters.AddWithValue("@type",          message.Type);
-        cmd.Parameters.AddWithValue("@payload",       message.Payload);
+        cmd.Parameters.AddWithValue("@id", message.Id.ToString());
+        cmd.Parameters.AddWithValue("@outboxName", message.OutboxName);
+        cmd.Parameters.AddWithValue("@type", message.Type);
+        cmd.Parameters.AddWithValue("@payload", message.Payload);
         cmd.Parameters.AddWithValue("@correlationId", (object?)message.CorrelationId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@traceId",       (object?)message.TraceId       ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@destination",   (object?)message.Destination   ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@status",        (int)message.Status);
-        cmd.Parameters.AddWithValue("@createdAt",     message.CreatedAt.ToString("O"));
-        cmd.Parameters.AddWithValue("@scheduledFor",  message.ScheduledFor.HasValue
+        cmd.Parameters.AddWithValue("@traceId", (object?)message.TraceId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@destination", (object?)message.Destination ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@status", (int)message.Status);
+        cmd.Parameters.AddWithValue("@createdAt", message.CreatedAt.ToString("O"));
+        cmd.Parameters.AddWithValue("@scheduledFor", message.ScheduledFor.HasValue
             ? (object)message.ScheduledFor.Value.ToString("O")
             : DBNull.Value);
         await cmd.ExecuteNonQueryAsync(ct);
@@ -87,7 +89,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         var sql = $"""
             SELECT Id, OutboxName, Type, Payload, CorrelationId, TraceId,
                    Destination, Status, CreatedAt, PublishedAt, Error, RetryCount, ScheduledFor
-            FROM OutboxMessages
+            FROM [{_table}]
             WHERE OutboxName = @outbox
               AND Status IN ({(int)OutboxMessageStatus.Pending}, {(int)OutboxMessageStatus.Failed})
               AND (ScheduledFor IS NULL OR ScheduledFor <= datetime('now'))
@@ -98,7 +100,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@outbox", outboxName);
-        cmd.Parameters.AddWithValue("@batch",  batchSize);
+        cmd.Parameters.AddWithValue("@batch", batchSize);
         return await ReadMessagesAsync(cmd, ct);
     }
 
@@ -114,30 +116,30 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
     public async Task MarkFailedAsync(Guid id, string error, int retryCount, CancellationToken ct = default)
     {
-        const string sql = """
-            UPDATE OutboxMessages
+        var sql = $"""
+            UPDATE [{_table}]
             SET Status = @status, Error = @error, RetryCount = @retry
             WHERE Id = @id
             """;
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",     id.ToString());
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         cmd.Parameters.AddWithValue("@status", (int)OutboxMessageStatus.Failed);
-        cmd.Parameters.AddWithValue("@error",  error);
-        cmd.Parameters.AddWithValue("@retry",  retryCount);
+        cmd.Parameters.AddWithValue("@error", error);
+        cmd.Parameters.AddWithValue("@retry", retryCount);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task MarkDeadLetteredAsync(Guid id, string error, CancellationToken ct = default)
     {
-        const string sql = "UPDATE OutboxMessages SET Status = @status, Error = @error WHERE Id = @id";
+        var sql = $"UPDATE [{_table}] SET Status = @status, Error = @error WHERE Id = @id";
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",     id.ToString());
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         cmd.Parameters.AddWithValue("@status", (int)OutboxMessageStatus.DeadLettered);
-        cmd.Parameters.AddWithValue("@error",  error);
+        cmd.Parameters.AddWithValue("@error", error);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -150,8 +152,8 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using var conn = await OpenAsync(ct);
 
         var counts = new Dictionary<OutboxMessageStatus, int>();
-        const string countSql = """
-            SELECT Status, COUNT(*) FROM OutboxMessages
+        var countSql = $"""
+            SELECT Status, COUNT(*) FROM [{_table}]
             WHERE OutboxName = @outbox GROUP BY Status
             """;
         await using (var cmd = new SqliteCommand(countSql, conn))
@@ -164,7 +166,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
         DateTime? oldestPending = null;
         var oldestSql = $"""
-            SELECT MIN(CreatedAt) FROM OutboxMessages
+            SELECT MIN(CreatedAt) FROM [{_table}]
             WHERE OutboxName = @outbox AND Status = {(int)OutboxMessageStatus.Pending}
               AND (ScheduledFor IS NULL OR ScheduledFor <= datetime('now'))
             """;
@@ -177,7 +179,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
         var scheduled = 0;
         var scheduledSql = $"""
-            SELECT COUNT(*) FROM OutboxMessages
+            SELECT COUNT(*) FROM [{_table}]
             WHERE OutboxName = @outbox
               AND Status = {(int)OutboxMessageStatus.Pending}
               AND ScheduledFor > datetime('now')
@@ -189,13 +191,13 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         }
 
         return new OutboxStats(
-            OutboxName:    outboxName,
-            Pending:       counts.GetValueOrDefault(OutboxMessageStatus.Pending),
-            Dispatching:   counts.GetValueOrDefault(OutboxMessageStatus.Dispatching),
-            Published:     counts.GetValueOrDefault(OutboxMessageStatus.Published),
-            Failed:        counts.GetValueOrDefault(OutboxMessageStatus.Failed),
-            DeadLettered:  counts.GetValueOrDefault(OutboxMessageStatus.DeadLettered),
-            Scheduled:     scheduled,
+            OutboxName: outboxName,
+            Pending: counts.GetValueOrDefault(OutboxMessageStatus.Pending),
+            Dispatching: counts.GetValueOrDefault(OutboxMessageStatus.Dispatching),
+            Published: counts.GetValueOrDefault(OutboxMessageStatus.Published),
+            Failed: counts.GetValueOrDefault(OutboxMessageStatus.Failed),
+            DeadLettered: counts.GetValueOrDefault(OutboxMessageStatus.DeadLettered),
+            Scheduled: scheduled,
             OldestPending: oldestPending);
     }
 
@@ -205,7 +207,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         var sql = $"""
             SELECT Id, OutboxName, Type, Payload, CorrelationId, TraceId,
                    Destination, Status, CreatedAt, PublishedAt, Error, RetryCount, ScheduledFor
-            FROM OutboxMessages
+            FROM [{_table}]
             WHERE OutboxName = @outbox AND Status = {(int)OutboxMessageStatus.DeadLettered}
             ORDER BY CreatedAt DESC
             LIMIT @limit
@@ -214,7 +216,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@outbox", outboxName);
-        cmd.Parameters.AddWithValue("@limit",  limit);
+        cmd.Parameters.AddWithValue("@limit", limit);
         return await ReadMessagesAsync(cmd, ct);
     }
 
@@ -224,7 +226,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         var sql = $"""
             SELECT Id, OutboxName, Type, Payload, CorrelationId, TraceId,
                    Destination, Status, CreatedAt, PublishedAt, Error, RetryCount, ScheduledFor
-            FROM OutboxMessages
+            FROM [{_table}]
             WHERE OutboxName = @outbox AND Status = {(int)OutboxMessageStatus.Failed}
             ORDER BY CreatedAt DESC
             LIMIT @limit
@@ -233,17 +235,17 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@outbox", outboxName);
-        cmd.Parameters.AddWithValue("@limit",  limit);
+        cmd.Parameters.AddWithValue("@limit", limit);
         return await ReadMessagesAsync(cmd, ct);
     }
 
     public async Task<IReadOnlyList<OutboxMessage>> GetByCorrelationIdAsync(
         string correlationId, CancellationToken ct = default)
     {
-        const string sql = """
+        var sql = $"""
             SELECT Id, OutboxName, Type, Payload, CorrelationId, TraceId,
                    Destination, Status, CreatedAt, PublishedAt, Error, RetryCount, ScheduledFor
-            FROM OutboxMessages
+            FROM [{_table}]
             WHERE CorrelationId = @correlationId
             ORDER BY CreatedAt ASC
             """;
@@ -259,7 +261,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
     {
         var cutoff = (DateTime.UtcNow - olderThan).ToString("O");
         var sql = $"""
-            DELETE FROM OutboxMessages
+            DELETE FROM [{_table}]
             WHERE OutboxName = @outbox
               AND Status = {(int)OutboxMessageStatus.Published}
               AND PublishedAt < @cutoff
@@ -267,8 +269,8 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@outbox",  outboxName);
-        cmd.Parameters.AddWithValue("@cutoff",  cutoff);
+        cmd.Parameters.AddWithValue("@outbox", outboxName);
+        cmd.Parameters.AddWithValue("@cutoff", cutoff);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -279,7 +281,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
     public async Task<bool> RequeueAsync(Guid messageId, CancellationToken ct = default)
     {
         var sql = $"""
-            UPDATE OutboxMessages
+            UPDATE [{_table}]
             SET Status = {(int)OutboxMessageStatus.Pending}, Error = NULL, RetryCount = 0
             WHERE Id = @id
               AND Status IN ({(int)OutboxMessageStatus.DeadLettered}, {(int)OutboxMessageStatus.Failed})
@@ -294,7 +296,7 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
     public async Task<int> RequeueAllDeadLetteredAsync(string outboxName, CancellationToken ct = default)
     {
         var sql = $"""
-            UPDATE OutboxMessages
+            UPDATE [{_table}]
             SET Status = {(int)OutboxMessageStatus.Pending}, Error = NULL, RetryCount = 0
             WHERE OutboxName = @outbox
               AND Status = {(int)OutboxMessageStatus.DeadLettered}
@@ -314,12 +316,12 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
         Guid id, OutboxMessageStatus status, CancellationToken ct, DateTime? publishedAt = null)
     {
         var sql = publishedAt.HasValue
-            ? "UPDATE OutboxMessages SET Status = @status, PublishedAt = @ts WHERE Id = @id"
-            : "UPDATE OutboxMessages SET Status = @status WHERE Id = @id";
+            ? $"UPDATE [{_table}] SET Status = @status, PublishedAt = @ts WHERE Id = @id"
+            : $"UPDATE [{_table}] SET Status = @status WHERE Id = @id";
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id",     id.ToString());
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         cmd.Parameters.AddWithValue("@status", (int)status);
         if (publishedAt.HasValue)
             cmd.Parameters.AddWithValue("@ts", publishedAt.Value.ToString("O"));
@@ -338,19 +340,19 @@ public sealed class SqliteOutboxStore(string connectionString) : IOutboxStore
 
     private static OutboxMessage MapRow(SqliteDataReader r) => new()
     {
-        Id            = Guid.Parse(r.GetString(0)),
-        OutboxName    = r.GetString(1),
-        Type          = r.GetString(2),
-        Payload       = r.GetString(3),
-        CorrelationId = r.IsDBNull(4)  ? null : r.GetString(4),
-        TraceId       = r.IsDBNull(5)  ? null : r.GetString(5),
-        Destination   = r.IsDBNull(6)  ? null : r.GetString(6),
-        Status        = (OutboxMessageStatus)r.GetInt32(7),
-        CreatedAt     = DateTime.Parse(r.GetString(8)),
-        PublishedAt   = r.IsDBNull(9)  ? null : DateTime.Parse(r.GetString(9)),
-        Error         = r.IsDBNull(10) ? null : r.GetString(10),
-        RetryCount    = r.GetInt32(11),
-        ScheduledFor  = r.IsDBNull(12) ? null : DateTime.Parse(r.GetString(12)),
+        Id = Guid.Parse(r.GetString(0)),
+        OutboxName = r.GetString(1),
+        Type = r.GetString(2),
+        Payload = r.GetString(3),
+        CorrelationId = r.IsDBNull(4) ? null : r.GetString(4),
+        TraceId = r.IsDBNull(5) ? null : r.GetString(5),
+        Destination = r.IsDBNull(6) ? null : r.GetString(6),
+        Status = (OutboxMessageStatus)r.GetInt32(7),
+        CreatedAt = DateTime.Parse(r.GetString(8)),
+        PublishedAt = r.IsDBNull(9) ? null : DateTime.Parse(r.GetString(9)),
+        Error = r.IsDBNull(10) ? null : r.GetString(10),
+        RetryCount = r.GetInt32(11),
+        ScheduledFor = r.IsDBNull(12) ? null : DateTime.Parse(r.GetString(12)),
     };
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct)

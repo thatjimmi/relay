@@ -1,52 +1,33 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Relay.Inbox.Core;
-using Relay.Outbox.Core;
+using Relay.Inbox.Extensions;
+using Relay.Outbox.Extensions;
 
 namespace Relay.Sample.Infrastructure;
 
 public static class InfrastructureExtensions
 {
     /// <summary>
-    /// Registers the SQLite-backed inbox and outbox stores and schedules
-    /// schema initialisation to run before the app starts handling requests.
+    /// Use a SQLite-backed store for this inbox.
+    /// Each inbox can have its own table by passing a different <paramref name="tableName"/>.
+    /// Schema is created automatically on startup via the library's built-in schema initializer.
     /// </summary>
-    public static IServiceCollection AddSqliteRelayStores(
-        this IServiceCollection services,
-        string connectionString)
+    public static InboxBuilder UseSqliteStore(
+        this InboxBuilder builder,
+        string connectionString,
+        string tableName = "InboxMessages")
     {
-        var inbox  = new SqliteInboxStore(connectionString);
-        var outbox = new SqliteOutboxStore(connectionString);
-
-        services.AddSingleton<IInboxStore>(inbox);
-        services.AddSingleton<IOutboxStore>(outbox);
-
-        // Run CREATE TABLE IF NOT EXISTS before the first request arrives.
-        services.AddHostedService(sp => new SqliteSchemaInitializer(
-            inbox, outbox,
-            sp.GetRequiredService<ILogger<SqliteSchemaInitializer>>()));
-
-        return services;
-    }
-}
-
-/// <summary>
-/// Hosted service that ensures both SQLite tables exist on startup.
-/// Runs before the Kestrel server begins accepting connections.
-/// </summary>
-internal sealed class SqliteSchemaInitializer(
-    SqliteInboxStore  inbox,
-    SqliteOutboxStore outbox,
-    ILogger<SqliteSchemaInitializer> logger) : IHostedService
-{
-    public async Task StartAsync(CancellationToken ct)
-    {
-        logger.LogInformation("Initialising SQLite schema…");
-        await inbox.EnsureSchemaAsync(ct);
-        await outbox.EnsureSchemaAsync(ct);
-        logger.LogInformation("SQLite schema ready");
+        return builder.UseStore(new SqliteInboxStore(connectionString, tableName));
     }
 
-    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+    /// <summary>
+    /// Use a SQLite-backed store for this outbox.
+    /// Each outbox can have its own table by passing a different <paramref name="tableName"/>.
+    /// Schema is created automatically on startup via the library's built-in schema initializer.
+    /// </summary>
+    public static OutboxBuilder UseSqliteStore(
+        this OutboxBuilder builder,
+        string connectionString,
+        string tableName = "OutboxMessages")
+    {
+        return builder.UseStore(new SqliteOutboxStore(connectionString, tableName));
+    }
 }

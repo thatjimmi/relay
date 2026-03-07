@@ -68,14 +68,17 @@ public class InboxOutboxIntegrationTests
         FakeOutboxPublisher<RiskAlertEvent> riskPublisher)
     Build()
     {
-        var inboxStore  = new InMemoryInboxStore();
+        var inboxStore = new InMemoryInboxStore();
         var outboxStore = new InMemoryOutboxStore();
-        var outboxWriter = new OutboxWriter(outboxStore);
+
+        var outboxResolver = new OutboxStoreResolver();
+        outboxResolver.Register("*", outboxStore);
+        var outboxWriter = new OutboxWriter(outboxResolver);
 
         var handler = new TradeExecutedHandler(outboxWriter);
 
-        var inboxOpts    = new Inbox.Core.InboxOptions { CorrelationScope = OutboxCorrelationContext.Set };
-        var receiver     = new Inbox.Internal.InboxReceiver<TradeExecutedEvent>(
+        var inboxOpts = new Inbox.Core.InboxOptions { CorrelationScope = OutboxCorrelationContext.Set };
+        var receiver = new Inbox.Internal.InboxReceiver<TradeExecutedEvent>(
             inboxStore, handler, "market-exchange", inboxOpts);
 
         var inboxRegistry = new Inbox.Internal.HandlerRegistry();
@@ -85,13 +88,16 @@ public class InboxOutboxIntegrationTests
         inboxServices.AddSingleton<IInboxHandler<TradeExecutedEvent>>(handler);
         var inboxSp = inboxServices.BuildServiceProvider();
 
+        var inboxResolver = new InboxStoreResolver();
+        inboxResolver.Register("*", inboxStore);
+
         var inboxProcessor = new Inbox.Internal.InboxProcessor(
-            inboxStore, inboxRegistry, inboxSp, inboxOpts,
+            inboxResolver, inboxRegistry, inboxSp, inboxOpts,
             NullLogger<Inbox.Internal.InboxProcessor>.Instance);
 
         // Outbox publishers
         var confirmedPublisher = new FakeOutboxPublisher<TradeConfirmedEvent>();
-        var riskPublisher      = new FakeOutboxPublisher<RiskAlertEvent>();
+        var riskPublisher = new FakeOutboxPublisher<RiskAlertEvent>();
 
         var outboxRegistry = new PublisherRegistry();
         outboxRegistry.Register("market-exchange", typeof(TradeConfirmedEvent));
@@ -103,7 +109,7 @@ public class InboxOutboxIntegrationTests
         var outboxSp = outboxServices.BuildServiceProvider();
 
         var outboxDispatcher = new OutboxDispatcher(
-            outboxStore, outboxRegistry, outboxSp,
+            outboxResolver, outboxRegistry, outboxSp,
             new OutboxOptions(),
             NullLogger<OutboxDispatcher>.Instance);
 
@@ -205,9 +211,12 @@ public class InboxOutboxIntegrationTests
         // since the inbox message will retry and re-stage them on next attempt.
         // In a real scenario, wrap both in a DB transaction for true atomicity.
 
-        var inboxStore  = new InMemoryInboxStore();
+        var inboxStore = new InMemoryInboxStore();
         var outboxStore = new InMemoryOutboxStore();
-        var outboxWriter = new OutboxWriter(outboxStore);
+
+        var outboxResolver = new OutboxStoreResolver();
+        outboxResolver.Register("*", outboxStore);
+        var outboxWriter = new OutboxWriter(outboxResolver);
 
         // Handler that writes to outbox then throws
         var faultyHandler = new FaultyHandlerWithOutbox(outboxWriter);
@@ -220,8 +229,11 @@ public class InboxOutboxIntegrationTests
         var services = new ServiceCollection();
         services.AddSingleton<IInboxHandler<TradeExecutedEvent>>(faultyHandler);
 
+        var inboxResolver = new InboxStoreResolver();
+        inboxResolver.Register("*", inboxStore);
+
         var processor = new Inbox.Internal.InboxProcessor(
-            inboxStore, registry, services.BuildServiceProvider(),
+            inboxResolver, registry, services.BuildServiceProvider(),
             inboxOpts, NullLogger<Inbox.Internal.InboxProcessor>.Instance);
 
         await receiver.ReceiveAsync(new TradeExecutedEvent("NYSE", "TRD-001", "AAPL", 100m, 1));

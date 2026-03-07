@@ -56,11 +56,11 @@ public class OrderFilledHandler : IInboxHandler<OrderFilledEvent>
 public class InboxReceiverTests
 {
     private static (InMemoryInboxStore store, IInboxReceiver<TradeExecutedEvent> receiver) Build(
-        string inbox = "market") 
+        string inbox = "market")
     {
-        var store   = new InMemoryInboxStore();
+        var store = new InMemoryInboxStore();
         var handler = new TradeExecutedHandler();
-        var opts    = new InboxOptions();
+        var opts = new InboxOptions();
         var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, inbox, opts);
         return (store, receiver);
     }
@@ -121,9 +121,9 @@ public class InboxReceiverTests
     public async Task Calls_OnDuplicate_hook_when_duplicate_received()
     {
         var duplicateKeys = new List<string>();
-        var store   = new InMemoryInboxStore();
+        var store = new InMemoryInboxStore();
         var handler = new TradeExecutedHandler();
-        var opts    = new InboxOptions { OnDuplicate = key => { duplicateKeys.Add(key); return Task.CompletedTask; } };
+        var opts = new InboxOptions { OnDuplicate = key => { duplicateKeys.Add(key); return Task.CompletedTask; } };
         var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
         var trade = NewTrade();
 
@@ -142,18 +142,21 @@ public class InboxProcessorTests
                     InboxProcessor processor, FakeInboxHandler<TradeExecutedEvent> handler)
         Build(InboxOptions? options = null)
     {
-        var store    = new InMemoryInboxStore();
-        var opts     = options ?? new InboxOptions();
-        var handler  = new FakeInboxHandler<TradeExecutedEvent>(t => $"trade:{t.Exchange}:{t.ExternalTradeId}");
+        var store = new InMemoryInboxStore();
+        var opts = options ?? new InboxOptions();
+        var handler = new FakeInboxHandler<TradeExecutedEvent>(t => $"trade:{t.Exchange}:{t.ExternalTradeId}");
         var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
         var registry = new HandlerRegistry();
         registry.Register("market", typeof(TradeExecutedEvent));
+
+        var resolver = new InboxStoreResolver();
+        resolver.Register("*", store);
 
         var services = new ServiceCollection();
         services.AddSingleton<IInboxHandler<TradeExecutedEvent>>(handler);
         var sp = services.BuildServiceProvider();
 
-        var processor = new InboxProcessor(store, registry, sp, opts,
+        var processor = new InboxProcessor(resolver, registry, sp, opts,
             NullLogger<InboxProcessor>.Instance);
 
         return (store, receiver, processor, handler);
@@ -231,18 +234,21 @@ public class InboxProcessorTests
     [Fact]
     public async Task Failing_handler_increments_retry_count()
     {
-        var store    = new InMemoryInboxStore();
-        var opts     = new InboxOptions { MaxRetries = 5 };
-        var failing  = new AlwaysFailingHandler<TradeExecutedEvent>(t => $"trade:{t.ExternalTradeId}");
+        var store = new InMemoryInboxStore();
+        var opts = new InboxOptions { MaxRetries = 5 };
+        var failing = new AlwaysFailingHandler<TradeExecutedEvent>(t => $"trade:{t.ExternalTradeId}");
         var receiver = new InboxReceiver<TradeExecutedEvent>(store, failing, "market", opts);
         var registry = new HandlerRegistry();
         registry.Register("market", typeof(TradeExecutedEvent));
+
+        var resolver = new InboxStoreResolver();
+        resolver.Register("*", store);
 
         var services = new ServiceCollection();
         services.AddSingleton<IInboxHandler<TradeExecutedEvent>>(failing);
         var sp = services.BuildServiceProvider();
 
-        var processor = new InboxProcessor(store, registry, sp, opts,
+        var processor = new InboxProcessor(resolver, registry, sp, opts,
             NullLogger<InboxProcessor>.Instance);
 
         await receiver.ReceiveAsync(NewTrade());
@@ -258,20 +264,24 @@ public class InboxProcessorTests
     public async Task Dead_letters_after_max_retries()
     {
         var deadLettered = new List<InboxMessage>();
-        var store    = new InMemoryInboxStore();
-        var opts     = new InboxOptions
+        var store = new InMemoryInboxStore();
+        var opts = new InboxOptions
         {
             MaxRetries = 3,
             OnDeadLettered = (msg, _) => { deadLettered.Add(msg); return Task.CompletedTask; }
         };
-        var failing  = new AlwaysFailingHandler<TradeExecutedEvent>(t => $"trade:{t.ExternalTradeId}");
+        var failing = new AlwaysFailingHandler<TradeExecutedEvent>(t => $"trade:{t.ExternalTradeId}");
         var receiver = new InboxReceiver<TradeExecutedEvent>(store, failing, "market", opts);
         var registry = new HandlerRegistry();
         registry.Register("market", typeof(TradeExecutedEvent));
+
+        var resolver = new InboxStoreResolver();
+        resolver.Register("*", store);
+
         var services = new ServiceCollection();
         services.AddSingleton<IInboxHandler<TradeExecutedEvent>>(failing);
         var sp = services.BuildServiceProvider();
-        var processor = new InboxProcessor(store, registry, sp, opts,
+        var processor = new InboxProcessor(resolver, registry, sp, opts,
             NullLogger<InboxProcessor>.Instance);
 
         await receiver.ReceiveAsync(NewTrade());
@@ -287,16 +297,20 @@ public class InboxProcessorTests
     [Fact]
     public async Task Requeue_resets_dead_lettered_message_to_pending()
     {
-        var store    = new InMemoryInboxStore();
-        var opts     = new InboxOptions { MaxRetries = 1 };
-        var failing  = new AlwaysFailingHandler<TradeExecutedEvent>(t => $"trade:{t.ExternalTradeId}");
+        var store = new InMemoryInboxStore();
+        var opts = new InboxOptions { MaxRetries = 1 };
+        var failing = new AlwaysFailingHandler<TradeExecutedEvent>(t => $"trade:{t.ExternalTradeId}");
         var receiver = new InboxReceiver<TradeExecutedEvent>(store, failing, "market", opts);
         var registry = new HandlerRegistry();
         registry.Register("market", typeof(TradeExecutedEvent));
+
+        var reqResolver = new InboxStoreResolver();
+        reqResolver.Register("*", store);
+
         var services = new ServiceCollection();
         services.AddSingleton<IInboxHandler<TradeExecutedEvent>>(failing);
         var sp = services.BuildServiceProvider();
-        var processor = new InboxProcessor(store, registry, sp, opts,
+        var processor = new InboxProcessor(reqResolver, registry, sp, opts,
             NullLogger<InboxProcessor>.Instance);
 
         await receiver.ReceiveAsync(NewTrade());
@@ -351,8 +365,8 @@ public class InboxIsolationTests
     [Fact]
     public async Task Two_inboxes_are_fully_isolated()
     {
-        var store     = new InMemoryInboxStore();
-        var opts      = new InboxOptions();
+        var store = new InMemoryInboxStore();
+        var opts = new InboxOptions();
         var tradeHandler = new FakeInboxHandler<TradeExecutedEvent>(
             t => $"trade:{t.Exchange}:{t.ExternalTradeId}");
         var orderHandler = new FakeInboxHandler<OrderFilledEvent>(
@@ -364,7 +378,7 @@ public class InboxIsolationTests
         await marketReceiver.ReceiveAsync(new TradeExecutedEvent("NYSE", "TRD-001", "AAPL", 1m, 1, DateTime.UtcNow));
         await paymentReceiver.ReceiveAsync(new OrderFilledEvent("NYSE", "ORD-001", "AAPL", 1m));
 
-        var marketMessages  = store.All.Where(m => m.InboxName == "market").ToList();
+        var marketMessages = store.All.Where(m => m.InboxName == "market").ToList();
         var paymentMessages = store.All.Where(m => m.InboxName == "payments").ToList();
 
         Assert.Single(marketMessages);

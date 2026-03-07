@@ -17,12 +17,12 @@ namespace Relay.Sample.AzureFunctions.Functions;
 /// </summary>
 public sealed class OrdersFunction(
     IInboxReceiver<OrderPlaced> receiver,
-    ILogger<OrdersFunction>     logger)
+    ILogger<OrdersFunction> logger)
 {
     // POST /api/orders
     [Function("ReceiveOrder")]
     public async Task<HttpResponseData> ReceiveOrder(
-        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "orders")] HttpRequestData req,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "orders")] HttpRequestData req,
         CancellationToken ct)
     {
         OrderPlaced? order;
@@ -49,12 +49,12 @@ public sealed class OrdersFunction(
         var result = await receiver.ReceiveAsync(order, source: "azure-functions-http", ct: ct);
 
         var statusCode = result.WasDuplicate ? HttpStatusCode.OK : HttpStatusCode.Accepted;
-        var response   = req.CreateResponse(statusCode);
+        var response = req.CreateResponse(statusCode);
 
         await response.WriteAsJsonAsync(new
         {
-            status    = result.WasDuplicate ? "duplicate" : "accepted",
-            orderId   = order.OrderId,
+            status = result.WasDuplicate ? "duplicate" : "accepted",
+            orderId = order.OrderId,
             messageId = result.MessageId,
         }, ct);
 
@@ -64,7 +64,7 @@ public sealed class OrdersFunction(
     // POST /api/orders/seed  — convenience endpoint for local testing
     [Function("SeedOrders")]
     public async Task<HttpResponseData> SeedOrders(
-        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "orders/seed")] HttpRequestData req,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "orders/seed")] HttpRequestData req,
         CancellationToken ct)
     {
         OrderPlaced[] orders =
