@@ -18,6 +18,18 @@ Relay solves both:
 
 No message broker required. No opinionated background threads. Bring your own scheduler.
 
+### Why use an inbox:
+
+**Persist first, process second.** When a message arrives, it is written to durable storage before your handler runs. If the process crashes mid-flight, the message is still there on restart and will be retried — nothing is lost. If the same message arrives again before or after processing, it is detected as a duplicate and skipped immediately, before any handler runs.
+
+**Idempotency keys are yours to define.** Instead of relying on a broker-assigned message ID (which may change on retry or re-delivery), you derive a stable key from the message payload itself. The same logical event — regardless of how many times it is delivered or by which route — always maps to the same key. This gives you true end-to-end idempotency, not just transport-level deduplication.
+
+**Two-phase receive + process.** Receiving a message and processing it are decoupled. `IInboxReceiver` persists and acknowledges the message at the system boundary. `IInboxProcessor` runs handlers asynchronously in a separate step. This means your API endpoint can return immediately without blocking on business logic, and processing can be driven by any scheduler you already have.
+
+**Safe for concurrent instances.** The SQL store uses `SKIP LOCKED` so multiple instances of your service can process the inbox in parallel without stepping on each other. Each message is locked and claimed by exactly one worker per attempt.
+
+**Retry with dead-lettering, not silent discard.** Failed messages are retried up to a configurable limit. After exhausting retries they move to dead-letter state, where you can inspect, alert on, and requeue them. Nothing is silently dropped.
+
 ---
 
 ## Features
