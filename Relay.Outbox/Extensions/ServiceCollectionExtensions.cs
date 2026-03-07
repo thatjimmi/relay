@@ -92,6 +92,10 @@ public sealed class OutboxBuilder
         this.services = services;
         this.outboxName = outboxName;
         this.registry = registry;
+
+        // Register the options instance now; hook methods mutate the same reference,
+        // so DI will always see the fully-configured object.
+        services.AddSingleton(_options);
     }
 
     /// <summary>Register a publisher for a message type in this outbox.</summary>

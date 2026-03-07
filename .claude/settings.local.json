@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet sln add Relay.Sample/Relay.Sample.csproj)",
+      "Bash(dotnet build Relay.Sample/Relay.Sample.csproj)",
+      "Bash(dotnet run)"
+    ]
+  }
+}

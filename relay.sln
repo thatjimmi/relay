@@ -1,4 +1,4 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -17,6 +17,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Relay.Outbox.Testing", "Relay.Outbox.Testing\Relay.Outbox.Testing.csproj", "{B51A8DE1-E09B-E819-1CCE-138A1B3B6DDB}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Relay", "Relay\Relay.csproj", "{78FBDAAA-602B-DF24-BA01-DB1547AF31A5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Relay.Sample", "Relay.Sample\Relay.Sample.csproj", "{230A5FEC-7272-4696-920C-7A381629D06B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -56,6 +58,10 @@ Global
 		{78FBDAAA-602B-DF24-BA01-DB1547AF31A5}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{78FBDAAA-602B-DF24-BA01-DB1547AF31A5}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{78FBDAAA-602B-DF24-BA01-DB1547AF31A5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{230A5FEC-7272-4696-920C-7A381629D06B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{230A5FEC-7272-4696-920C-7A381629D06B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{230A5FEC-7272-4696-920C-7A381629D06B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{230A5FEC-7272-4696-920C-7A381629D06B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
