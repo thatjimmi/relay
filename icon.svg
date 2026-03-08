@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <radialGradient id="nodeGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#818cf8;stop-opacity:0.6"/>
+      <stop offset="100%" style="stop-color:#4f46e5;stop-opacity:0"/>
+    </radialGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d0d1f"/>
+      <stop offset="100%" style="stop-color:#1a1040"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+
+  <!-- Top lane: left segment → node -->
+  <line x1="14" y1="46" x2="46" y2="46" stroke="#6366f1" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- Arrowhead pointing right into node -->
+  <polyline points="38,40 48,46 38,52" fill="none" stroke="#818cf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Top lane: node → right segment -->
+  <line x1="82" y1="46" x2="114" y2="46" stroke="#6366f1" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- Arrowhead pointing right (exit) -->
+  <polyline points="105,40 115,46 105,52" fill="none" stroke="#818cf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Bottom lane: right segment → node -->
+  <line x1="114" y1="82" x2="82" y2="82" stroke="#a78bfa" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- Arrowhead pointing left into node -->
+  <polyline points="90,76 80,82 90,88" fill="none" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Bottom lane: node → left segment -->
+  <line x1="46" y1="82" x2="14" y2="82" stroke="#a78bfa" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- Arrowhead pointing left (exit) -->
+  <polyline points="23,76 13,82 23,88" fill="none" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Glow halo behind node -->
+  <circle cx="64" cy="64" r="28" fill="url(#nodeGlow)"/>
+
+  <!-- Node outer ring -->
+  <circle cx="64" cy="64" r="17" fill="#0d0d2e" stroke="#6366f1" stroke-width="2.5" filter="url(#glow)"/>
+
+  <!-- Node inner glow -->
+  <circle cx="64" cy="64" r="9" fill="#4f46e5" filter="url(#glow)" opacity="0.9"/>
+
+  <!-- Node bright center -->
+  <circle cx="64" cy="64" r="4.5" fill="#e0e7ff"/>
+</svg>

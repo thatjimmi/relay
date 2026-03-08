@@ -17,11 +17,13 @@
     <RepositoryType>git</RepositoryType>
     <Copyright>Copyright © 2026 thatjimmi</Copyright>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
