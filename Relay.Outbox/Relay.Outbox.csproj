@@ -9,9 +9,20 @@
     <PackageId>Relay.Outbox</PackageId>
     <Version>1.0.0</Version>
     <Description>Lightweight outbox pattern for .NET. Raw ADO.NET (no ORM). Named isolated outboxes with pluggable publishers. Scheduled dispatch, automatic correlation to inbox messages, SKIP LOCKED for parallel-safe dispatch.</Description>
-    <Authors>YourName</Authors>
+    <Authors>thatjimmi</Authors>
     <PackageTags>outbox;inbox;messaging;reliability;at-least-once</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/thatjimmi/relay</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/thatjimmi/relay</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Copyright>Copyright © 2026 thatjimmi</Copyright>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relay.Outbox.Tests" />
