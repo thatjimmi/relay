@@ -46,14 +46,16 @@ public sealed class OrdersFunction(
 
         logger.LogInformation("Receiving order {OrderId} from {CustomerId}", order.OrderId, order.CustomerId);
 
-        var result = await receiver.ReceiveAsync(order, source: "azure-functions-http", ct: ct);
+        var result = order.SourceTimestamp.HasValue
+            ? await receiver.ReceiveAsync(order, source: "azure-functions-http", sourceTimestamp: order.SourceTimestamp.Value, ct: ct)
+            : await receiver.ReceiveAsync(order, source: "azure-functions-http", ct: ct);
 
         var statusCode = result.WasDuplicate ? HttpStatusCode.OK : HttpStatusCode.Accepted;
         var response = req.CreateResponse(statusCode);
 
         await response.WriteAsJsonAsync(new
         {
-            status = result.WasDuplicate ? "duplicate" : "accepted",
+            status = result.WasUpdated ? "updated" : result.WasDuplicate ? "duplicate" : "accepted",
             orderId = order.OrderId,
             messageId = result.MessageId,
         }, ct);

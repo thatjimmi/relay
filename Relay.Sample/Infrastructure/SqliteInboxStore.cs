@@ -84,7 +84,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
             return null;
 
         var id = Guid.Parse(reader.GetString(0));
-        DateTime? sourceTimestamp = reader.IsDBNull(1) ? null : DateTime.Parse(reader.GetString(1));
+        DateTime? sourceTimestamp = reader.IsDBNull(1) ? null : DateTime.Parse(reader.GetString(1), null, System.Globalization.DateTimeStyles.RoundtripKind);
         return (id, sourceTimestamp);
     }
 
@@ -378,7 +378,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         RetryCount = r.GetInt32(9),
         TraceId         = r.IsDBNull(10) ? null : r.GetString(10),
         Source          = r.IsDBNull(11) ? null : r.GetString(11),
-        SourceTimestamp = r.IsDBNull(12) ? null : DateTime.Parse(r.GetString(12)),
+        SourceTimestamp = r.IsDBNull(12) ? null : DateTime.Parse(r.GetString(12), null, System.Globalization.DateTimeStyles.RoundtripKind),
     };
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct)
