@@ -179,6 +179,157 @@ public class InboxReceiverTests
 
         Assert.Single(stored); // only called once, not for the duplicate
     }
+
+    // -------------------------------------------------------------------------
+    // Source timestamp tests
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Source_timestamp_stored_on_new_message()
+    {
+        var (store, receiver) = Build();
+        var ts = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        await receiver.ReceiveAsync(NewTrade(), ts);
+
+        Assert.Equal(ts, store.All.Single().SourceTimestamp);
+    }
+
+    [Fact]
+    public async Task Newer_source_timestamp_updates_existing_message_and_returns_Updated()
+    {
+        var (store, receiver) = Build();
+        var trade = NewTrade();
+        var t1 = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2024, 6, 1, 11, 0, 0, DateTimeKind.Utc);
+
+        await receiver.ReceiveAsync(trade, t1);
+        var updatedTrade = trade with { Price = 195.00m }; // payload changed
+        var result = await receiver.ReceiveAsync(updatedTrade, t2);
+
+        Assert.True(result.Accepted);
+        Assert.True(result.WasUpdated);
+        Assert.False(result.WasDuplicate);
+        Assert.Single(store.All);                          // still one row
+        Assert.Equal(t2, store.All.Single().SourceTimestamp);
+        Assert.Contains("195", store.All.Single().Payload); // updated payload
+    }
+
+    [Fact]
+    public async Task Same_source_timestamp_is_treated_as_duplicate()
+    {
+        var (store, receiver) = Build();
+        var ts = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+
+        await receiver.ReceiveAsync(NewTrade(), ts);
+        var result = await receiver.ReceiveAsync(NewTrade() with { Price = 200m }, ts);
+
+        Assert.False(result.Accepted);
+        Assert.True(result.WasDuplicate);
+    }
+
+    [Fact]
+    public async Task Older_source_timestamp_is_treated_as_duplicate()
+    {
+        var (store, receiver) = Build();
+        var t1 = new DateTime(2024, 6, 1, 11, 0, 0, DateTimeKind.Utc);
+        var t0 = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc); // earlier
+
+        await receiver.ReceiveAsync(NewTrade(), t1);
+        var result = await receiver.ReceiveAsync(NewTrade() with { Price = 200m }, t0);
+
+        Assert.False(result.Accepted);
+        Assert.True(result.WasDuplicate);
+        Assert.Equal(t1, store.All.Single().SourceTimestamp); // unchanged
+    }
+
+    [Fact]
+    public async Task First_message_with_timestamp_accepted_even_if_existing_has_no_timestamp()
+    {
+        var (store, receiver) = Build();
+        var trade = NewTrade();
+
+        // First receive: no timestamp
+        await receiver.ReceiveAsync(trade);
+        Assert.Null(store.All.Single().SourceTimestamp);
+
+        // Second receive: with timestamp — stored timestamp is null so any timestamp is "newer"
+        var ts = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        var result = await receiver.ReceiveAsync(trade with { Price = 200m }, ts);
+
+        Assert.True(result.Accepted);
+        Assert.True(result.WasUpdated);
+        Assert.Equal(ts, store.All.Single().SourceTimestamp);
+    }
+
+    [Fact]
+    public async Task Updated_message_is_reset_to_Pending_so_processor_picks_it_up()
+    {
+        var store = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var opts = new InboxOptions();
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
+        var trade = NewTrade();
+        var t1 = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2024, 6, 1, 11, 0, 0, DateTimeKind.Utc);
+
+        await receiver.ReceiveAsync(trade, t1);
+
+        // Simulate it having been processed already
+        var msg = store.All.Single();
+        msg.Status = InboxMessageStatus.Processed;
+
+        // A newer update arrives — should reset to Pending
+        await receiver.ReceiveAsync(trade with { Price = 200m }, t2);
+
+        Assert.Equal(InboxMessageStatus.Pending, store.All.Single().Status);
+    }
+
+    [Fact]
+    public async Task Updated_message_id_matches_original()
+    {
+        var (store, receiver) = Build();
+        var trade = NewTrade();
+        var t1 = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2024, 6, 1, 11, 0, 0, DateTimeKind.Utc);
+
+        var first = await receiver.ReceiveAsync(trade, t1);
+        var second = await receiver.ReceiveAsync(trade with { Price = 200m }, t2);
+
+        Assert.Equal(first.MessageId, second.MessageId); // same row
+    }
+
+    [Fact]
+    public async Task OnMessageUpdated_hook_fires_on_update_not_on_new()
+    {
+        var updated = new List<InboxMessage>();
+        var store = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var opts = new InboxOptions { OnMessageUpdated = msg => { updated.Add(msg); return Task.CompletedTask; } };
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
+        var trade = NewTrade();
+        var t1 = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        var t2 = new DateTime(2024, 6, 1, 11, 0, 0, DateTimeKind.Utc);
+
+        await receiver.ReceiveAsync(trade, t1);          // new — should NOT fire OnMessageUpdated
+        await receiver.ReceiveAsync(trade, t2);          // update — should fire
+
+        Assert.Single(updated);
+        Assert.Equal(t2, updated[0].SourceTimestamp);
+    }
+
+    [Fact]
+    public async Task No_timestamp_on_duplicate_still_returns_Duplicate()
+    {
+        var (store, receiver) = Build();
+        var trade = NewTrade();
+
+        await receiver.ReceiveAsync(trade, new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc));
+        // Second call: no timestamp at all → original duplicate logic
+        var result = await receiver.ReceiveAsync(trade);
+
+        Assert.True(result.WasDuplicate);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,18 @@ public interface IInboxReceiver<TMessage>
     /// Override the source tag for this call (e.g. "binance-ws", "stripe-webhook").
     /// </summary>
     Task<InboxReceiveResult> ReceiveAsync(TMessage message, string source, CancellationToken ct = default);
+
+    /// <summary>
+    /// Receive with a source timestamp from the external system. If a message with the
+    /// same idempotency key already exists but with an older (or absent) source timestamp,
+    /// the payload is updated and the message is re-queued for processing.
+    /// </summary>
+    Task<InboxReceiveResult> ReceiveAsync(TMessage message, DateTime sourceTimestamp, CancellationToken ct = default);
+
+    /// <summary>
+    /// Receive with both a source tag and a source timestamp.
+    /// </summary>
+    Task<InboxReceiveResult> ReceiveAsync(TMessage message, string source, DateTime sourceTimestamp, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -69,6 +81,20 @@ public interface IInboxRequeue
 public interface IInboxStore : IInboxQuery, IInboxRequeue
 {
     Task<bool> ExistsAsync(string idempotencyKey, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the existing message's Id and SourceTimestamp if the key exists, or null if not found.
+    /// Used to support source-timestamp-based update semantics.
+    /// </summary>
+    Task<(Guid Id, DateTime? SourceTimestamp)?> TryGetAsync(string idempotencyKey, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates payload + source timestamp for an existing key and resets status to Pending,
+    /// but only if the stored SourceTimestamp is null or older than <paramref name="sourceTimestamp"/>.
+    /// Returns true if the update was applied.
+    /// </summary>
+    Task<bool> UpdateIfNewerAsync(string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default);
+
     Task InsertAsync(InboxMessage message, CancellationToken ct = default);
     Task<IReadOnlyList<InboxMessage>> GetPendingAsync(string inboxName, int batchSize, CancellationToken ct = default);
     Task MarkProcessingAsync(Guid id, CancellationToken ct = default);

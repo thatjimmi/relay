@@ -20,6 +20,33 @@ public sealed class InMemoryInboxStore : IInboxStore
     public Task<bool> ExistsAsync(string idempotencyKey, CancellationToken ct = default) =>
         Task.FromResult(_byKey.ContainsKey(idempotencyKey));
 
+    public Task<(Guid Id, DateTime? SourceTimestamp)?> TryGetAsync(
+        string idempotencyKey, CancellationToken ct = default)
+    {
+        if (_byKey.TryGetValue(idempotencyKey, out var m))
+            return Task.FromResult<(Guid, DateTime?)?>(( m.Id, m.SourceTimestamp ));
+        return Task.FromResult<(Guid, DateTime?)?>(null);
+    }
+
+    public Task<bool> UpdateIfNewerAsync(
+        string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default)
+    {
+        if (!_byKey.TryGetValue(idempotencyKey, out var m))
+            return Task.FromResult(false);
+
+        if (m.SourceTimestamp.HasValue && sourceTimestamp <= m.SourceTimestamp.Value)
+            return Task.FromResult(false);
+
+        m.Payload         = payload;
+        m.SourceTimestamp = sourceTimestamp;
+        m.Status          = InboxMessageStatus.Pending;
+        m.ReceivedAt      = DateTime.UtcNow;
+        m.Error           = null;
+        m.RetryCount      = 0;
+        m.ProcessedAt     = null;
+        return Task.FromResult(true);
+    }
+
     public Task InsertAsync(InboxMessage message, CancellationToken ct = default)
     {
         _byKey[message.IdempotencyKey] = message;

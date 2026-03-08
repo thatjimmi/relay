@@ -42,6 +42,14 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
                     ON [{table}] (InboxName, Status, ReceivedAt)
                     INCLUDE (Id, [Type], Payload);
             END
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE object_id = OBJECT_ID(N'[{table}]') AND name = N'SourceTimestamp'
+            )
+            BEGIN
+                ALTER TABLE [{table}] ADD SourceTimestamp DATETIME2 NULL;
+            END
             """;
 
         // We can't use parameters for table names, but we control this value from config
@@ -68,13 +76,57 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         return result is not null;
     }
 
+    public async Task<(Guid Id, DateTime? SourceTimestamp)?> TryGetAsync(
+        string idempotencyKey, CancellationToken ct = default)
+    {
+        var sql = $"SELECT Id, SourceTimestamp FROM [{_table}] WHERE IdempotencyKey = @key";
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@key", SqlDbType.NVarChar, 500).Value = idempotencyKey;
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return null;
+
+        var id = reader.GetGuid(0);
+        DateTime? sourceTimestamp = reader.IsDBNull(1) ? null : reader.GetDateTime(1);
+        return (id, sourceTimestamp);
+    }
+
+    public async Task<bool> UpdateIfNewerAsync(
+        string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default)
+    {
+        var sql = $"""
+            UPDATE [{_table}]
+            SET Payload         = @payload,
+                SourceTimestamp = @sourceTs,
+                Status          = {(int)InboxMessageStatus.Pending},
+                ReceivedAt      = @now,
+                Error           = NULL,
+                RetryCount      = 0,
+                ProcessedAt     = NULL
+            WHERE IdempotencyKey = @key
+              AND (SourceTimestamp IS NULL OR SourceTimestamp < @sourceTs)
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@key",      SqlDbType.NVarChar, 500).Value  = idempotencyKey;
+        cmd.Parameters.Add("@payload",  SqlDbType.NVarChar, -1).Value   = payload;
+        cmd.Parameters.Add("@sourceTs", SqlDbType.DateTime2).Value      = sourceTimestamp;
+        cmd.Parameters.Add("@now",      SqlDbType.DateTime2).Value      = DateTime.UtcNow;
+
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+    }
+
     public async Task InsertAsync(InboxMessage message, CancellationToken ct = default)
     {
         var sql = $"""
             INSERT INTO [{_table}]
-                (Id, InboxName, [Type], IdempotencyKey, Payload, Status, ReceivedAt, TraceId, Source)
+                (Id, InboxName, [Type], IdempotencyKey, Payload, Status, ReceivedAt, TraceId, Source, SourceTimestamp)
             VALUES
-                (@id, @inboxName, @type, @key, @payload, @status, @receivedAt, @traceId, @source)
+                (@id, @inboxName, @type, @key, @payload, @status, @receivedAt, @traceId, @source, @sourceTs)
             """;
 
         await using var conn = await OpenAsync(ct);
@@ -88,6 +140,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         cmd.Parameters.Add("@receivedAt", SqlDbType.DateTime2).Value       = message.ReceivedAt;
         cmd.Parameters.Add("@traceId",    SqlDbType.NVarChar, 100).Value   = (object?)message.TraceId ?? DBNull.Value;
         cmd.Parameters.Add("@source",     SqlDbType.NVarChar, 200).Value   = (object?)message.Source  ?? DBNull.Value;
+        cmd.Parameters.Add("@sourceTs",   SqlDbType.DateTime2).Value       = (object?)message.SourceTimestamp ?? DBNull.Value;
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -105,7 +158,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
 
         var sql = $"""
             SELECT TOP (@batch) Id, InboxName, [Type], IdempotencyKey, Payload,
-                                Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
+                                Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}] {skipLocked}
             WHERE InboxName = @inbox
               AND Status IN ({(int)InboxMessageStatus.Pending}, {(int)InboxMessageStatus.Failed})
@@ -210,7 +263,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
     {
         var sql = $"""
             SELECT TOP (@limit) Id, InboxName, [Type], IdempotencyKey, Payload,
-                                Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
+                                Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.DeadLettered}
             ORDER BY ReceivedAt DESC
@@ -228,7 +281,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
     {
         var sql = $"""
             SELECT TOP (@limit) Id, InboxName, [Type], IdempotencyKey, Payload,
-                                Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
+                                Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.Failed}
             ORDER BY ReceivedAt DESC
@@ -323,18 +376,19 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
 
     private static InboxMessage MapRow(SqlDataReader r) => new()
     {
-        Id             = r.GetGuid(0),
-        InboxName      = r.GetString(1),
-        Type           = r.GetString(2),
-        IdempotencyKey = r.GetString(3),
-        Payload        = r.GetString(4),
-        Status         = (InboxMessageStatus)r.GetByte(5),
-        ReceivedAt     = r.GetDateTime(6),
-        ProcessedAt    = r.IsDBNull(7) ? null : r.GetDateTime(7),
-        Error          = r.IsDBNull(8) ? null : r.GetString(8),
-        RetryCount     = r.GetInt32(9),
-        TraceId        = r.IsDBNull(10) ? null : r.GetString(10),
-        Source         = r.IsDBNull(11) ? null : r.GetString(11),
+        Id              = r.GetGuid(0),
+        InboxName       = r.GetString(1),
+        Type            = r.GetString(2),
+        IdempotencyKey  = r.GetString(3),
+        Payload         = r.GetString(4),
+        Status          = (InboxMessageStatus)r.GetByte(5),
+        ReceivedAt      = r.GetDateTime(6),
+        ProcessedAt     = r.IsDBNull(7) ? null : r.GetDateTime(7),
+        Error           = r.IsDBNull(8) ? null : r.GetString(8),
+        RetryCount      = r.GetInt32(9),
+        TraceId         = r.IsDBNull(10) ? null : r.GetString(10),
+        Source          = r.IsDBNull(11) ? null : r.GetString(11),
+        SourceTimestamp = r.IsDBNull(12) ? null : r.GetDateTime(12),
     };
 
     private async Task<SqlConnection> OpenAsync(CancellationToken ct)

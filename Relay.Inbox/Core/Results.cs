@@ -4,13 +4,17 @@ public record InboxReceiveResult
 {
     public bool Accepted { get; init; }
     public bool WasDuplicate { get; init; }
+    public bool WasUpdated { get; init; }
     public Guid? MessageId { get; init; }
 
     public static InboxReceiveResult Duplicate() =>
         new() { Accepted = false, WasDuplicate = true };
 
     public static InboxReceiveResult Stored(Guid id) =>
-        new() { Accepted = true, WasDuplicate = false, MessageId = id };
+        new() { Accepted = true, MessageId = id };
+
+    public static InboxReceiveResult Updated(Guid id) =>
+        new() { Accepted = true, WasUpdated = true, MessageId = id };
 }
 
 public record InboxProcessResult

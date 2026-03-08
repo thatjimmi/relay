@@ -41,7 +41,6 @@ public static class ServiceCollectionExtensions
         {
             registry = new PublisherRegistry();
             services.AddSingleton(registry);
-            services.AddSingleton<OutboxOptionsResolver>();
             services.AddScoped<IOutboxWriter, OutboxWriter>();
             services.AddScoped<IOutboxDispatcher, OutboxDispatcher>();
         }

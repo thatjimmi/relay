@@ -31,7 +31,8 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
                 Error           TEXT    NULL,
                 RetryCount      INTEGER NOT NULL DEFAULT 0,
                 TraceId         TEXT    NULL,
-                Source          TEXT    NULL
+                Source          TEXT    NULL,
+                SourceTimestamp TEXT    NULL
             );
 
             CREATE INDEX IF NOT EXISTS IX_{_table}_InboxName_Status
@@ -41,6 +42,19 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
         await cmd.ExecuteNonQueryAsync(ct);
+
+        // Add SourceTimestamp to existing tables that predate this column.
+        // Use pragma_table_info rather than ALTER TABLE + catch, as SQLite may throw
+        // NullReferenceException or InvalidOperationException in some hosting environments.
+        await using var checkCmd = new SqliteCommand(
+            $"SELECT COUNT(*) FROM pragma_table_info('{_table}') WHERE name='SourceTimestamp'", conn);
+        var colExists = (long)(await checkCmd.ExecuteScalarAsync(ct))! > 0;
+        if (!colExists)
+        {
+            await using var alter = new SqliteCommand(
+                $"ALTER TABLE [{_table}] ADD COLUMN SourceTimestamp TEXT NULL", conn);
+            await alter.ExecuteNonQueryAsync(ct);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -56,26 +70,69 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         return await cmd.ExecuteScalarAsync(ct) is not null;
     }
 
-    public async Task InsertAsync(InboxMessage message, CancellationToken ct = default)
+    public async Task<(Guid Id, DateTime? SourceTimestamp)?> TryGetAsync(
+        string idempotencyKey, CancellationToken ct = default)
+    {
+        var sql = $"SELECT Id, SourceTimestamp FROM [{_table}] WHERE IdempotencyKey = @key";
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@key", idempotencyKey);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return null;
+
+        var id = Guid.Parse(reader.GetString(0));
+        DateTime? sourceTimestamp = reader.IsDBNull(1) ? null : DateTime.Parse(reader.GetString(1));
+        return (id, sourceTimestamp);
+    }
+
+    public async Task<bool> UpdateIfNewerAsync(
+        string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default)
     {
         var sql = $"""
-            INSERT INTO [{_table}]
-                (Id, InboxName, Type, IdempotencyKey, Payload, Status, ReceivedAt, TraceId, Source)
-            VALUES
-                (@id, @inboxName, @type, @key, @payload, @status, @receivedAt, @traceId, @source)
+            UPDATE [{_table}]
+            SET Payload         = @payload,
+                SourceTimestamp = @sourceTs,
+                Status          = {(int)InboxMessageStatus.Pending},
+                ReceivedAt      = @now,
+                Error           = NULL,
+                RetryCount      = 0,
+                ProcessedAt     = NULL
+            WHERE IdempotencyKey = @key
+              AND (SourceTimestamp IS NULL OR SourceTimestamp < @sourceTs)
             """;
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id", message.Id.ToString());
+        cmd.Parameters.AddWithValue("@key",      idempotencyKey);
+        cmd.Parameters.AddWithValue("@payload",  payload);
+        cmd.Parameters.AddWithValue("@sourceTs", sourceTimestamp.ToString("O"));
+        cmd.Parameters.AddWithValue("@now",      DateTime.UtcNow.ToString("O"));
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+    }
+
+    public async Task InsertAsync(InboxMessage message, CancellationToken ct = default)
+    {
+        var sql = $"""
+            INSERT INTO [{_table}]
+                (Id, InboxName, Type, IdempotencyKey, Payload, Status, ReceivedAt, TraceId, Source, SourceTimestamp)
+            VALUES
+                (@id, @inboxName, @type, @key, @payload, @status, @receivedAt, @traceId, @source, @sourceTs)
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@id",       message.Id.ToString());
         cmd.Parameters.AddWithValue("@inboxName", message.InboxName);
-        cmd.Parameters.AddWithValue("@type", message.Type);
-        cmd.Parameters.AddWithValue("@key", message.IdempotencyKey);
-        cmd.Parameters.AddWithValue("@payload", message.Payload);
-        cmd.Parameters.AddWithValue("@status", (int)message.Status);
+        cmd.Parameters.AddWithValue("@type",     message.Type);
+        cmd.Parameters.AddWithValue("@key",      message.IdempotencyKey);
+        cmd.Parameters.AddWithValue("@payload",  message.Payload);
+        cmd.Parameters.AddWithValue("@status",   (int)message.Status);
         cmd.Parameters.AddWithValue("@receivedAt", message.ReceivedAt.ToString("O"));
-        cmd.Parameters.AddWithValue("@traceId", (object?)message.TraceId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@source", (object?)message.Source ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@traceId",  (object?)message.TraceId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@source",   (object?)message.Source ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@sourceTs", (object?)message.SourceTimestamp?.ToString("O") ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -88,7 +145,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
     {
         var sql = $"""
             SELECT Id, InboxName, Type, IdempotencyKey, Payload,
-                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}]
             WHERE InboxName = @inbox
               AND Status IN ({(int)InboxMessageStatus.Pending}, {(int)InboxMessageStatus.Failed})
@@ -191,7 +248,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
     {
         var sql = $"""
             SELECT Id, InboxName, Type, IdempotencyKey, Payload,
-                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.DeadLettered}
             ORDER BY ReceivedAt DESC
@@ -210,7 +267,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
     {
         var sql = $"""
             SELECT Id, InboxName, Type, IdempotencyKey, Payload,
-                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}]
             WHERE InboxName = @inbox AND Status = {(int)InboxMessageStatus.Failed}
             ORDER BY ReceivedAt DESC
@@ -318,8 +375,9 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         ProcessedAt = r.IsDBNull(7) ? null : DateTime.Parse(r.GetString(7)),
         Error = r.IsDBNull(8) ? null : r.GetString(8),
         RetryCount = r.GetInt32(9),
-        TraceId = r.IsDBNull(10) ? null : r.GetString(10),
-        Source = r.IsDBNull(11) ? null : r.GetString(11),
+        TraceId         = r.IsDBNull(10) ? null : r.GetString(10),
+        Source          = r.IsDBNull(11) ? null : r.GetString(11),
+        SourceTimestamp = r.IsDBNull(12) ? null : DateTime.Parse(r.GetString(12)),
     };
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken ct)

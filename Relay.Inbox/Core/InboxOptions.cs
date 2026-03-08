@@ -34,6 +34,12 @@ public sealed class InboxOptions
     public Func<string, Task>? OnDuplicate { get; set; }
 
     /// <summary>
+    /// Optional hook called when an existing message is updated due to a newer source timestamp.
+    /// The message reflects the new payload; use this for metrics, logging, or triggering downstream work.
+    /// </summary>
+    public Func<InboxMessage, Task>? OnMessageUpdated { get; set; }
+
+    /// <summary>
     /// Optional factory that sets an ambient correlation scope for the duration of handler
     /// execution. Called with the inbox message ID (as string) before the handler runs;
     /// the returned IDisposable is disposed immediately after.

@@ -34,7 +34,7 @@ No message broker required. No opinionated background threads. Bring your own sc
 
 ## Features
 
-- Idempotent inbox — duplicate messages are detected and skipped
+- Idempotent inbox — duplicate messages are detected and skipped; source-timestamp-based payload updates allow amendments to the same key
 - Atomic outbox — stage outgoing events in the same unit of work as your handler
 - Retry + dead-letter with configurable max attempts and hooks
 - Scheduled dispatch — stage a message for future delivery
@@ -155,6 +155,21 @@ app.MapPost("/orders", async (
         : Results.Accepted($"/orders/{order.OrderId}", new { messageId = result.MessageId });
 });
 ```
+
+If the external system can send **updates** to the same logical message (same idempotency key, new payload), pass the source timestamp from the external event. The inbox accepts the update only when the incoming timestamp is strictly newer:
+
+```csharp
+var result = await receiver.ReceiveAsync(trade, sourceTimestamp: trade.EventTimestamp);
+
+if (result.WasUpdated)
+    // existing message was replaced with a newer payload and re-queued for processing
+else if (result.WasDuplicate)
+    // same or older timestamp — ignored
+else
+    // result.Accepted — new message stored
+```
+
+See [Source Timestamp / Payload Updates](#source-timestamp--payload-updates) for details.
 
 ### 5. Drive processing from your scheduler
 
@@ -319,11 +334,49 @@ Hook into lifecycle events:
 ```csharp
 inbox.WithOptions(o =>
 {
-    o.OnProcessed    = msg => metrics.IncrementAsync("inbox.processed");
-    o.OnFailed       = (msg, ex) => logger.LogWarning(ex, "Inbox message {Id} failed", msg.Id);
-    o.OnDeadLettered = (msg, ex) => alerts.FireAsync($"Dead letter: {msg.IdempotencyKey}");
-    o.OnDuplicate    = key => logger.LogDebug("Duplicate ignored: {Key}", key);
+    o.OnProcessed      = msg => metrics.IncrementAsync("inbox.processed");
+    o.OnFailed         = (msg, ex) => logger.LogWarning(ex, "Inbox message {Id} failed", msg.Id);
+    o.OnDeadLettered   = (msg, ex) => alerts.FireAsync($"Dead letter: {msg.IdempotencyKey}");
+    o.OnDuplicate      = key => logger.LogDebug("Duplicate ignored: {Key}", key);
+    o.OnMessageUpdated = msg => logger.LogInformation("Message {Key} updated at {Ts}", msg.IdempotencyKey, msg.SourceTimestamp);
 });
+```
+
+---
+
+## Source Timestamp / Payload Updates
+
+Some external systems send the same logical message multiple times with an evolving payload — for example, a trade that is first created and later amended. When those messages share the same natural key (e.g. `tradeId`), a plain idempotency check would reject the update as a duplicate.
+
+Pass the **source timestamp** (the time the event was produced by the external system) to allow the inbox to decide:
+
+| Situation | Result |
+|---|---|
+| Key does not exist | `Stored` — normal insert |
+| Key exists, incoming timestamp is newer | `Updated` — payload replaced, message reset to Pending |
+| Key exists, incoming timestamp is same or older | `Duplicate` — ignored |
+| Key exists, no timestamp on incoming call | `Duplicate` — original behaviour preserved |
+
+```csharp
+// With source timestamp only
+var result = await receiver.ReceiveAsync(trade, sourceTimestamp: trade.EventTimestamp);
+
+// With both a source tag and a source timestamp
+var result = await receiver.ReceiveAsync(trade, source: "exchange-ws", trade.EventTimestamp);
+```
+
+**What "updated" means:** the existing row's payload and `SourceTimestamp` are replaced, and the status is reset to `Pending` (with retries and errors cleared). This means an already-processed message will be re-queued and handled again with the new data — which is the correct behaviour for trade amendments.
+
+The update is atomic in SQL: `WHERE SourceTimestamp IS NULL OR SourceTimestamp < @sourceTs` ensures that concurrent arrivals of out-of-order events cannot overwrite a newer record.
+
+Use the `OnMessageUpdated` hook to trigger downstream work or emit metrics when a payload is replaced:
+
+```csharp
+o.OnMessageUpdated = msg =>
+{
+    logger.LogInformation("Trade {Key} amended, re-queued at {Ts}", msg.IdempotencyKey, msg.SourceTimestamp);
+    return Task.CompletedTask;
+};
 ```
 
 ---
