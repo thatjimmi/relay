@@ -3,7 +3,7 @@ using Relay.Outbox.Core;
 
 namespace Relay.Outbox.Internal;
 
-internal sealed class OutboxWriter(OutboxStoreResolver storeResolver) : IOutboxWriter
+internal sealed class OutboxWriter(OutboxStoreResolver storeResolver, OutboxOptionsResolver optionsResolver) : IOutboxWriter
 {
     public Task<OutboxWriteResult> WriteAsync<TMessage>(
         TMessage message,
@@ -49,6 +49,11 @@ internal sealed class OutboxWriter(OutboxStoreResolver storeResolver) : IOutboxW
         };
 
         await store.InsertAsync(outboxMessage, ct);
+
+        var opts = optionsResolver.TryResolve(outboxName);
+        if (opts?.OnMessageStored is not null)
+            await opts.OnMessageStored(outboxMessage);
+
         return OutboxWriteResult.Written(outboxMessage.Id, scheduledFor.HasValue);
     }
 }

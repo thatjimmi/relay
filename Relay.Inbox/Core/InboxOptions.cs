@@ -23,6 +23,12 @@ public sealed class InboxOptions
     public Func<InboxMessage, Exception, Task>? OnDeadLettered { get; set; }
 
     /// <summary>
+    /// Optional hook called immediately after a message is persisted to the store.
+    /// Useful for triggering downstream work (e.g. publish a Service Bus event, wake a processor).
+    /// </summary>
+    public Func<InboxMessage, Task>? OnMessageStored { get; set; }
+
+    /// <summary>
     /// Optional hook called when a duplicate is received.
     /// </summary>
     public Func<string, Task>? OnDuplicate { get; set; }

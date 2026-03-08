@@ -5,6 +5,12 @@ public sealed class OutboxOptions
     /// <summary>How many dispatch attempts before dead-lettering. Default: 5.</summary>
     public int MaxRetries { get; set; } = 5;
 
+    /// <summary>
+    /// Called immediately after a message is persisted to the store.
+    /// Useful for waking a dispatcher or emitting a downstream event.
+    /// </summary>
+    public Func<OutboxMessage, Task>? OnMessageStored { get; set; }
+
     /// <summary>Called after a message is successfully published.</summary>
     public Func<OutboxMessage, Task>? OnPublished { get; set; }
 

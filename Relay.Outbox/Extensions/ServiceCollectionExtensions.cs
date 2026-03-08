@@ -41,6 +41,7 @@ public static class ServiceCollectionExtensions
         {
             registry = new PublisherRegistry();
             services.AddSingleton(registry);
+            services.AddSingleton<OutboxOptionsResolver>();
             services.AddScoped<IOutboxWriter, OutboxWriter>();
             services.AddScoped<IOutboxDispatcher, OutboxDispatcher>();
         }
@@ -51,9 +52,21 @@ public static class ServiceCollectionExtensions
 
         var storeResolver = EnsureStoreResolver(services);
 
-        var builder = new OutboxBuilder(services, outboxName, registry, storeResolver);
+        var optionsResolver = EnsureOptionsResolver(services);
+        var builder = new OutboxBuilder(services, outboxName, registry, storeResolver, optionsResolver);
         configure(builder);
         return services;
+    }
+
+    private static OutboxOptionsResolver EnsureOptionsResolver(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d => d.ServiceType == typeof(OutboxOptionsResolver));
+        if (existing != null)
+            return (OutboxOptionsResolver)existing.ImplementationInstance!;
+
+        var resolver = new OutboxOptionsResolver();
+        services.AddSingleton(resolver);
+        return resolver;
     }
 
     private static OutboxStoreResolver EnsureStoreResolver(IServiceCollection services)
@@ -132,19 +145,22 @@ public sealed class OutboxBuilder
     private readonly string outboxName;
     private readonly PublisherRegistry registry;
     private readonly OutboxStoreResolver storeResolver;
+    private readonly OutboxOptionsResolver optionsResolver;
 
     private readonly OutboxOptions _options = new();
 
-    internal OutboxBuilder(IServiceCollection services, string outboxName, PublisherRegistry registry, OutboxStoreResolver storeResolver)
+    internal OutboxBuilder(IServiceCollection services, string outboxName, PublisherRegistry registry, OutboxStoreResolver storeResolver, OutboxOptionsResolver optionsResolver)
     {
         this.services = services;
         this.outboxName = outboxName;
         this.registry = registry;
         this.storeResolver = storeResolver;
+        this.optionsResolver = optionsResolver;
 
         // Register the options instance now; hook methods mutate the same reference,
         // so DI will always see the fully-configured object.
         services.AddSingleton(_options);
+        optionsResolver.Register(outboxName, _options);
     }
 
     /// <summary>
@@ -202,6 +218,12 @@ public sealed class OutboxBuilder
     public OutboxBuilder WithMaxRetries(int retries)
     {
         _options.MaxRetries = retries;
+        return this;
+    }
+
+    public OutboxBuilder OnMessageStored(Func<OutboxMessage, Task> hook)
+    {
+        _options.OnMessageStored = hook;
         return this;
     }
 

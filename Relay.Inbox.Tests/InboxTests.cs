@@ -132,6 +132,53 @@ public class InboxReceiverTests
 
         Assert.Single(duplicateKeys);
     }
+
+    [Fact]
+    public async Task Calls_OnMessageStored_after_successful_insert()
+    {
+        var stored = new List<InboxMessage>();
+        var store = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var opts = new InboxOptions { OnMessageStored = msg => { stored.Add(msg); return Task.CompletedTask; } };
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
+
+        await receiver.ReceiveAsync(NewTrade());
+
+        Assert.Single(stored);
+        Assert.Equal("market", stored[0].InboxName);
+        Assert.Equal(nameof(TradeExecutedEvent), stored[0].Type);
+    }
+
+    [Fact]
+    public async Task OnMessageStored_receives_assigned_message_id()
+    {
+        InboxMessage? captured = null;
+        var store = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var opts = new InboxOptions { OnMessageStored = msg => { captured = msg; return Task.CompletedTask; } };
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
+
+        var result = await receiver.ReceiveAsync(NewTrade());
+
+        Assert.NotNull(captured);
+        Assert.Equal(result.MessageId, captured!.Id);
+    }
+
+    [Fact]
+    public async Task OnMessageStored_not_called_for_duplicate()
+    {
+        var stored = new List<InboxMessage>();
+        var store = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var opts = new InboxOptions { OnMessageStored = msg => { stored.Add(msg); return Task.CompletedTask; } };
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", opts);
+        var trade = NewTrade();
+
+        await receiver.ReceiveAsync(trade);
+        await receiver.ReceiveAsync(trade); // duplicate
+
+        Assert.Single(stored); // only called once, not for the duplicate
+    }
 }
 
 // ---------------------------------------------------------------------------

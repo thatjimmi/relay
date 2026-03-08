@@ -27,6 +27,14 @@ var host = new HostBuilder()
             .WithOptions(o =>
             {
                 o.CorrelationScope = OutboxCorrelationContext.Set;
+
+                o.OnMessageStored = msg =>
+                {
+                    Console.WriteLine(
+                        $"[INBOX STORED] inbox={msg.InboxName} id={msg.Id} type={msg.Type}");
+                    return Task.CompletedTask;
+                };
+
                 o.OnDeadLettered = (msg, ex) =>
                 {
                     // In production: alert PagerDuty / Slack / Application Insights
@@ -41,6 +49,13 @@ var host = new HostBuilder()
             .WithPublisher<OrderFulfillmentRequested, FulfillmentPublisher>()
             .WithPublisher<OrderConfirmationSent, ConfirmationPublisher>()
             .UseSqliteStore(connStr, "OrderOutboxMessages")
+            .OnMessageStored(msg =>
+            {
+                // Wake the outbox dispatcher, publish a Service Bus event, etc.
+                Console.WriteLine(
+                    $"[OUTBOX STORED] outbox={msg.OutboxName} id={msg.Id} type={msg.Type}");
+                return Task.CompletedTask;
+            })
             .OnDeadLettered((msg, ex) =>
             {
                 Console.Error.WriteLine(

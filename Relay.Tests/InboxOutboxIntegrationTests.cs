@@ -73,7 +73,7 @@ public class InboxOutboxIntegrationTests
 
         var outboxResolver = new OutboxStoreResolver();
         outboxResolver.Register("*", outboxStore);
-        var outboxWriter = new OutboxWriter(outboxResolver);
+        var outboxWriter = new OutboxWriter(outboxResolver, new OutboxOptionsResolver());
 
         var handler = new TradeExecutedHandler(outboxWriter);
 
@@ -216,7 +216,7 @@ public class InboxOutboxIntegrationTests
 
         var outboxResolver = new OutboxStoreResolver();
         outboxResolver.Register("*", outboxStore);
-        var outboxWriter = new OutboxWriter(outboxResolver);
+        var outboxWriter = new OutboxWriter(outboxResolver, new OutboxOptionsResolver());
 
         // Handler that writes to outbox then throws
         var faultyHandler = new FaultyHandlerWithOutbox(outboxWriter);

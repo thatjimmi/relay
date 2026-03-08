@@ -22,6 +22,15 @@ builder.Services
             // written during handler execution carry the inbox message ID.
             o.CorrelationScope = OutboxCorrelationContext.Set;
 
+            // Called immediately after a message is persisted — use this to wake a
+            // background processor or publish a Service Bus notification without polling.
+            o.OnMessageStored = msg =>
+            {
+                Console.WriteLine(
+                    $"[INBOX STORED] inbox={msg.InboxName} id={msg.Id} type={msg.Type}");
+                return Task.CompletedTask;
+            };
+
             o.OnDeadLettered = (msg, ex) =>
             {
                 // In production: fire a PagerDuty / Slack alert here.
@@ -37,6 +46,13 @@ builder.Services
         .WithPublisher<OrderFulfillmentRequested, FulfillmentPublisher>()
         .WithPublisher<OrderConfirmationSent, ConfirmationPublisher>()
         .UseSqliteStore(connStr)
+        .OnMessageStored(msg =>
+        {
+            // Wake the outbox dispatcher, publish a Service Bus event, etc.
+            Console.WriteLine(
+                $"[OUTBOX STORED] outbox={msg.OutboxName} id={msg.Id} type={msg.Type}");
+            return Task.CompletedTask;
+        })
         .OnDeadLettered((msg, ex) =>
         {
             Console.Error.WriteLine(

@@ -38,6 +38,10 @@ internal sealed class InboxReceiver<TMessage>(
         };
 
         await store.InsertAsync(inboxMessage, ct);
+
+        if (options.OnMessageStored is not null)
+            await options.OnMessageStored(inboxMessage);
+
         return InboxReceiveResult.Stored(inboxMessage.Id);
     }
 }

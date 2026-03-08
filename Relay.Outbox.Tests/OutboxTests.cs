@@ -18,12 +18,13 @@ public record PositionUpdatedEvent(string AccountId, string Symbol, decimal NewQ
 
 public class OutboxWriterTests
 {
-    private static (InMemoryOutboxStore store, OutboxWriter writer) Build()
+    private static (InMemoryOutboxStore store, OutboxWriter writer) Build(
+        OutboxOptionsResolver? optionsResolver = null)
     {
         var store = new InMemoryOutboxStore();
         var resolver = new OutboxStoreResolver();
         resolver.Register("*", store);
-        var writer = new OutboxWriter(resolver);
+        var writer = new OutboxWriter(resolver, optionsResolver ?? new OutboxOptionsResolver());
         return (store, writer);
     }
 
@@ -130,6 +131,60 @@ public class OutboxWriterTests
 
         Assert.Null(store.All[0].CorrelationId); // no correlation outside scope
     }
+
+    [Fact]
+    public async Task OnMessageStored_called_after_write()
+    {
+        var stored = new List<OutboxMessage>();
+        var optionsResolver = new OutboxOptionsResolver();
+        var opts = new OutboxOptions { OnMessageStored = msg => { stored.Add(msg); return Task.CompletedTask; } };
+        optionsResolver.Register("market-exchange", opts);
+
+        var (_, writer) = Build(optionsResolver);
+
+        await writer.WriteAsync(
+            new TradeConfirmedEvent("NYSE", "TRD-001", "AAPL", 189.50m),
+            "market-exchange");
+
+        Assert.Single(stored);
+        Assert.Equal("market-exchange", stored[0].OutboxName);
+        Assert.Equal(nameof(TradeConfirmedEvent), stored[0].Type);
+    }
+
+    [Fact]
+    public async Task OnMessageStored_receives_assigned_id()
+    {
+        OutboxMessage? captured = null;
+        var optionsResolver = new OutboxOptionsResolver();
+        var opts = new OutboxOptions { OnMessageStored = msg => { captured = msg; return Task.CompletedTask; } };
+        optionsResolver.Register("market-exchange", opts);
+
+        var (_, writer) = Build(optionsResolver);
+
+        var result = await writer.WriteAsync(
+            new TradeConfirmedEvent("NYSE", "TRD-001", "AAPL", 189.50m),
+            "market-exchange");
+
+        Assert.NotNull(captured);
+        Assert.Equal(result.MessageId, captured!.Id);
+    }
+
+    [Fact]
+    public async Task OnMessageStored_not_called_for_different_outbox()
+    {
+        var stored = new List<OutboxMessage>();
+        var optionsResolver = new OutboxOptionsResolver();
+        var opts = new OutboxOptions { OnMessageStored = msg => { stored.Add(msg); return Task.CompletedTask; } };
+        optionsResolver.Register("other-outbox", opts);
+
+        var (_, writer) = Build(optionsResolver);
+
+        await writer.WriteAsync(
+            new TradeConfirmedEvent("NYSE", "TRD-001", "AAPL", 189.50m),
+            "market-exchange");
+
+        Assert.Empty(stored);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +198,7 @@ public class OutboxDispatcherTests
         var store = new InMemoryOutboxStore();
         var resolver = new OutboxStoreResolver();
         resolver.Register("*", store);
-        var writer = new OutboxWriter(resolver);
+        var writer = new OutboxWriter(resolver, new OutboxOptionsResolver());
         var opts = options ?? new OutboxOptions();
         var publisher = new FakeOutboxPublisher<TradeConfirmedEvent>();
         var registry = new PublisherRegistry();
@@ -231,7 +286,7 @@ public class OutboxDispatcherTests
         var store = new InMemoryOutboxStore();
         var resolver = new OutboxStoreResolver();
         resolver.Register("*", store);
-        var writer = new OutboxWriter(resolver);
+        var writer = new OutboxWriter(resolver, new OutboxOptionsResolver());
         var opts = new OutboxOptions { MaxRetries = 5 };
         var failing = new AlwaysFailingPublisher<TradeConfirmedEvent>();
         var registry = new PublisherRegistry();
@@ -255,7 +310,7 @@ public class OutboxDispatcherTests
         var store = new InMemoryOutboxStore();
         var resolver = new OutboxStoreResolver();
         resolver.Register("*", store);
-        var writer = new OutboxWriter(resolver);
+        var writer = new OutboxWriter(resolver, new OutboxOptionsResolver());
         var opts = new OutboxOptions
         {
             MaxRetries = 3,
@@ -283,7 +338,7 @@ public class OutboxDispatcherTests
         var store = new InMemoryOutboxStore();
         var resolver = new OutboxStoreResolver();
         resolver.Register("*", store);
-        var writer = new OutboxWriter(resolver);
+        var writer = new OutboxWriter(resolver, new OutboxOptionsResolver());
         var opts = new OutboxOptions { MaxRetries = 1 };
         var failing = new AlwaysFailingPublisher<TradeConfirmedEvent>();
         var registry = new PublisherRegistry();
