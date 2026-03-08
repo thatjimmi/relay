@@ -38,8 +38,5 @@ jobs:
       - name: Pack Relay.Outbox
         run: dotnet pack Relay.Outbox/Relay.Outbox.csproj --configuration Release --no-build -p:Version=${{ steps.version.outputs.VERSION }} --output ./nupkgs
 
-      - name: Pack Relay (meta-package)
-        run: dotnet pack Relay/Relay.csproj --configuration Release --no-build -p:Version=${{ steps.version.outputs.VERSION }} --output ./nupkgs
-
       - name: Push to NuGet
         run: dotnet nuget push ./nupkgs/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
