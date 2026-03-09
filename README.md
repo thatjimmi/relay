@@ -59,7 +59,9 @@ Relay/
 ├── Relay.Outbox.Tests/           # Outbox unit tests (xUnit)
 ├── Relay.Tests/                  # Inbox + outbox integration tests
 ├── Relay.Sample/                 # ASP.NET Core minimal API sample (SQLite)
-└── Relay.Sample.AzureFunctions/  # Azure Functions (Isolated Worker) sample (SQLite)
+├── Relay.Sample.AzureFunctions/  # Azure Functions (Isolated Worker) sample — handler mode (SQLite)
+├── Relay.Sample.ManualInbox/     # Azure Functions (Isolated Worker) sample — client mode (SQLite)
+└── Relay.Sample.ManualInbox.Tests/ # ManualInbox client-mode unit tests (xUnit)
 ```
 
 ---

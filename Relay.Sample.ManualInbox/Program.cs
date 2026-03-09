@@ -38,6 +38,12 @@ var host = new HostBuilder()
                         $"[STORED] inbox={msg.InboxName} key={msg.IdempotencyKey} id={msg.Id}");
                     return Task.CompletedTask;
                 };
+                o.OnProcessed = msg =>
+                {
+                    Console.WriteLine(
+                        $"[PROCESSED] inbox={msg.InboxName} key={msg.IdempotencyKey} id={msg.Id}");
+                    return Task.CompletedTask;
+                };
             })
             .UseInboxClientSqliteStore(connStr);
     })

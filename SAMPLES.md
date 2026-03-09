@@ -1,13 +1,14 @@
 # Relay Samples
 
-Two sample projects showing the same inbox/outbox pattern across different hosting models.
+Three sample projects showing the inbox/outbox pattern across different hosting models and API styles.
 
-| Project | Hosting |
-|---|---|
-| `Relay.Sample` | ASP.NET Core minimal API + `BackgroundService` workers |
-| `Relay.Sample.AzureFunctions` | Azure Functions v4 isolated worker (.NET 8) |
+| Project | Hosting | Inbox Mode |
+|---|---|---|
+| `Relay.Sample` | ASP.NET Core minimal API + `BackgroundService` workers | Handler (`IInboxHandler<T>`) |
+| `Relay.Sample.AzureFunctions` | Azure Functions v4 isolated worker (.NET 8) | Handler (`IInboxHandler<T>`) |
+| `Relay.Sample.ManualInbox` | Azure Functions v4 isolated worker (.NET 8) | Client (`IInboxClient`) |
 
-The domain logic, stores, and Relay configuration are identical between them. Only the hosting wiring changes.
+`Relay.Sample` and `Relay.Sample.AzureFunctions` use the **handler mode** — you register `IInboxHandler<T>` implementations and `IInboxProcessor` calls them automatically. `Relay.Sample.ManualInbox` uses the **client mode** — no handler classes, you fetch pending messages and process them yourself with `IInboxClient`.
 
 ---
 
@@ -284,6 +285,172 @@ curl -X POST http://localhost:7071/api/orders \
      -H "Content-Type: application/json" \
      -d '{"orderId":"ORD-004","customerId":"CUST-D","items":["Sprocket"],"total":9.99}'
 ```
+
+---
+
+## Relay.Sample.ManualInbox — Azure Functions (Client Mode)
+
+```
+Relay.Sample.ManualInbox/
+├── Domain/
+│   └── Events.cs                    PaymentReceived, RefundIssued (no handlers)
+├── Infrastructure/
+│   ├── SqliteInboxStore.cs          IInboxStore → SQLite
+│   └── InfrastructureExtensions.cs  UseInboxClientSqliteStore()
+├── Functions/
+│   ├── PaymentsFunction.cs          HTTP Triggers — receive payments, refunds, stats
+│   └── ProcessInboxFunction.cs      Timer Trigger — manual inbox processing
+├── Program.cs                       HostBuilder + AddInboxClient() (no handlers)
+├── host.json
+└── local.settings.json
+
+Relay.Sample.ManualInbox.Tests/
+└── ManualInboxTests.cs              25 unit tests covering the client-mode flow
+```
+
+### How it differs from the handler-mode samples
+
+In `Relay.Sample.AzureFunctions`, you register `IInboxHandler<OrderPlaced>` and call `IInboxProcessor.ProcessPendingAsync()` — the library resolves the handler, deserialises the payload, and calls `HandleAsync` for you.
+
+In `Relay.Sample.ManualInbox`, there are **no handler classes** and **no `IInboxProcessor`**. Instead:
+
+1. `AddInboxClient()` registers `IInboxClient` — a raw-mode API for both receiving and processing.
+2. HTTP triggers call `IInboxClient.ReceiveAsync(inboxName, message, idempotencyKey)` to store messages.
+3. A timer trigger (simulating a Service Bus trigger) calls `IInboxClient.GetPendingAsync()`, switches on `msg.Type` to deserialise, runs inline processing logic, then calls `MarkProcessedAsync` or `MarkFailedAsync`.
+
+This is useful when:
+- You don't want to create a handler class per message type.
+- Your processing logic is simple enough to live in the function itself.
+- You want full control over the process → mark-{processed,failed} lifecycle.
+- You're retrofitting an existing codebase that already has processing logic elsewhere.
+
+### The flow
+
+```
+                    ┌─────────────────────────────────────────────────┐
+  External caller   │           Your Azure Functions app             │
+                    │                                                │
+  POST /api/       ─┤                                                │
+  payments          │  PaymentsFunction                              │
+  POST /api/       ─┤     IInboxClient.ReceiveAsync(...)             │
+  refunds           │         ▼                                      │
+                    │     InboxMessages (SQLite)                     │
+                    │         ▼                                      │
+                    │  ProcessInboxFunction (Timer Trigger / 30s)    │
+                    │     IInboxClient.GetPendingAsync(...)           │
+                    │     switch (msg.Type)                          │
+                    │         case "PaymentReceived": ...             │
+                    │         case "RefundIssued": ...                │
+                    │     IInboxClient.MarkProcessedAsync(msg)       │
+                    └─────────────────────────────────────────────────┘
+```
+
+> **Note:** The timer trigger is a stand-in. In production you would replace it with a
+> Service Bus trigger — when a message is written to the inbox, `OnMessageStored` publishes
+> an event to Service Bus, and the `ProcessInboxFunction` is triggered by that event instead
+> of polling.
+
+### How it starts (`Program.cs`)
+
+```csharp
+var host = new HostBuilder()
+    .ConfigureFunctionsWorkerDefaults()
+    .ConfigureServices((ctx, services) =>
+    {
+        var connStr = $"Data Source={ctx.Configuration["Relay:Database"] ?? "relay-manual-inbox.db"}";
+
+        services
+            .AddInboxClient(o =>
+            {
+                o.OnDeadLettered = (msg, ex) => { /* alert */ };
+                o.OnMessageStored = msg => { /* publish to Service Bus */ };
+            })
+            .UseInboxClientSqliteStore(connStr);
+    })
+    .Build();
+```
+
+### Function classes
+
+**`PaymentsFunction`** — HTTP Triggers
+
+```csharp
+[Function("ReceivePayment")]
+public async Task<HttpResponseData> ReceivePayment(
+    [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "payments")] HttpRequestData req,
+    CancellationToken ct)
+{
+    var payment = await req.ReadFromJsonAsync<PaymentReceived>(ct);
+    var result  = await inbox.ReceiveAsync("payments", payment!, $"payment:{payment!.PaymentId}",
+                                           source: "azure-functions-http", ct: ct);
+    // return Accepted or OK (duplicate)
+}
+```
+
+Also exposes `POST /api/refunds`, `GET /api/stats`, `GET /api/payments/dead`, `POST /api/payments/{id}/requeue`, and `POST /api/demo/seed`.
+
+**`ProcessInboxFunction`** — Timer Trigger (simulates Service Bus)
+
+```csharp
+[Function("ProcessInbox")]
+public async Task Run(
+    [TimerTrigger("*/30 * * * * *", RunOnStartup = true, UseMonitor = false)] TimerInfo timer,
+    CancellationToken ct)
+{
+    var messages = await inbox.GetPendingAsync("payments", batchSize: 50, ct);
+    foreach (var msg in messages)
+    {
+        switch (msg.Type)
+        {
+            case nameof(PaymentReceived):
+                var payment = JsonSerializer.Deserialize<PaymentReceived>(msg.Payload)!;
+                // process payment...
+                break;
+            case nameof(RefundIssued):
+                var refund = JsonSerializer.Deserialize<RefundIssued>(msg.Payload)!;
+                // process refund...
+                break;
+        }
+        await inbox.MarkProcessedAsync(msg, ct);
+    }
+}
+```
+
+### Configuration (`local.settings.json`)
+
+```json
+{
+  "Values": {
+    "AzureWebJobsStorage":      "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "Relay__Database":          "relay-manual-inbox.db"
+  }
+}
+```
+
+### Running locally
+
+```bash
+azurite &
+cd Relay.Sample.ManualInbox
+func start
+
+curl -X POST http://localhost:7071/api/demo/seed
+curl         http://localhost:7071/api/stats
+curl -X POST http://localhost:7071/api/payments \
+     -H "Content-Type: application/json" \
+     -d '{"paymentId":"PAY-004","customerId":"CUST-D","amount":9.99,"currency":"USD"}'
+```
+
+### Tests
+
+The `Relay.Sample.ManualInbox.Tests` project contains 25 unit tests that exercise the `IInboxClient` flow end-to-end using `InMemoryInboxStore` — no Azure Functions SDK or HTTP infrastructure needed:
+
+```bash
+dotnet test Relay.Sample.ManualInbox.Tests
+```
+
+Tests cover: receive, deduplication, JSON payload round-trip, `GetPending`, `MarkProcessed`, `MarkFailed`, dead-lettering after max retries, hooks (`OnMessageStored`, `OnProcessed`, `OnDuplicate`, `OnDeadLettered`), batch size, source timestamps, stats, requeue, inbox isolation, and a full manual-processing flow that mirrors exactly what `ProcessInboxFunction` does.
 
 ---
 
