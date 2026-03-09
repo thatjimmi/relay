@@ -1,14 +1,15 @@
 # Relay Samples
 
-Three sample projects showing the inbox/outbox pattern across different hosting models and API styles.
+Four sample projects showing the inbox/outbox pattern across different hosting models and API styles.
 
-| Project | Hosting | Inbox Mode |
-|---|---|---|
-| `Relay.Sample` | ASP.NET Core minimal API + `BackgroundService` workers | Handler (`IInboxHandler<T>`) |
-| `Relay.Sample.AzureFunctions` | Azure Functions v4 isolated worker (.NET 8) | Handler (`IInboxHandler<T>`) |
-| `Relay.Sample.ManualInbox` | Azure Functions v4 isolated worker (.NET 8) | Client (`IInboxClient`) |
+| Project                       | Hosting                                                | Inbox Mode                   | Outbox        |
+| ----------------------------- | ------------------------------------------------------ | ---------------------------- | ------------- |
+| `Relay.Sample`                | ASP.NET Core minimal API + `BackgroundService` workers | Handler (`IInboxHandler<T>`) | Yes           |
+| `Relay.Sample.AzureFunctions` | Azure Functions v4 isolated worker (.NET 8)            | Handler (`IInboxHandler<T>`) | Yes           |
+| `Relay.Sample.ManualInbox`    | Azure Functions v4 isolated worker (.NET 8)            | Client (`IInboxClient`)      | No            |
+| `Relay.Sample.Trayport`       | Azure Functions v4 isolated worker (.NET 8)            | Client (`IInboxClient`)      | Yes — fan-out |
 
-`Relay.Sample` and `Relay.Sample.AzureFunctions` use the **handler mode** — you register `IInboxHandler<T>` implementations and `IInboxProcessor` calls them automatically. `Relay.Sample.ManualInbox` uses the **client mode** — no handler classes, you fetch pending messages and process them yourself with `IInboxClient`.
+`Relay.Sample` and `Relay.Sample.AzureFunctions` use the **handler mode** — you register `IInboxHandler<T>` implementations and `IInboxProcessor` calls them automatically. `Relay.Sample.ManualInbox` and `Relay.Sample.Trayport` use the **client mode** — no handler classes, you fetch pending messages and process them yourself with `IInboxClient`. `Relay.Sample.Trayport` adds outbox fan-out: each trade maps to two downstream messages (risk + settlement), correlated back to the originating inbox message.
 
 ---
 
@@ -110,13 +111,13 @@ Relay.Sample/
 
 ### Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/orders` | Receive an order — calls `IInboxReceiver`, returns `202 Accepted` or `200` (duplicate) |
-| `GET` | `/stats` | Inbox + outbox stats as JSON |
-| `GET` | `/orders/dead` | Dead-lettered inbox messages |
-| `POST` | `/orders/{id}/requeue` | Requeue a dead-lettered message |
-| `POST` | `/demo/seed` | Seeds 3 test orders — useful for local testing |
+| Method | Path                   | Description                                                                            |
+| ------ | ---------------------- | -------------------------------------------------------------------------------------- |
+| `POST` | `/orders`              | Receive an order — calls `IInboxReceiver`, returns `202 Accepted` or `200` (duplicate) |
+| `GET`  | `/stats`               | Inbox + outbox stats as JSON                                                           |
+| `GET`  | `/orders/dead`         | Dead-lettered inbox messages                                                           |
+| `POST` | `/orders/{id}/requeue` | Requeue a dead-lettered message                                                        |
+| `POST` | `/demo/seed`           | Seeds 3 test orders — useful for local testing                                         |
 
 ### Workers
 
@@ -142,7 +143,7 @@ A new DI scope is created per tick so scoped services (handlers, publishers) are
 {
   "Relay": {
     "Database": "relay-sample.db",
-    "Inbox":  { "PollingIntervalSeconds": 5 },
+    "Inbox": { "PollingIntervalSeconds": 5 },
     "Outbox": { "PollingIntervalSeconds": 5 }
   }
 }
@@ -184,13 +185,13 @@ Relay.Sample.AzureFunctions/
 
 ### How it maps to the Web API version
 
-| Relay.Sample | Relay.Sample.AzureFunctions |
-|---|---|
-| `WebApplication.CreateBuilder` | `HostBuilder` + `ConfigureFunctionsWorkerDefaults` |
-| `app.MapPost("/orders", ...)` | `[HttpTrigger]` on `OrdersFunction` |
-| `InboxWorker` : `BackgroundService` | `[TimerTrigger]` on `ProcessInboxFunction` |
-| `OutboxWorker` : `BackgroundService` | `[TimerTrigger]` on `DispatchOutboxFunction` |
-| `CreateAsyncScope()` in worker | Azure Functions creates a scope per invocation automatically |
+| Relay.Sample                         | Relay.Sample.AzureFunctions                                  |
+| ------------------------------------ | ------------------------------------------------------------ |
+| `WebApplication.CreateBuilder`       | `HostBuilder` + `ConfigureFunctionsWorkerDefaults`           |
+| `app.MapPost("/orders", ...)`        | `[HttpTrigger]` on `OrdersFunction`                          |
+| `InboxWorker` : `BackgroundService`  | `[TimerTrigger]` on `ProcessInboxFunction`                   |
+| `OutboxWorker` : `BackgroundService` | `[TimerTrigger]` on `DispatchOutboxFunction`                 |
+| `CreateAsyncScope()` in worker       | Azure Functions creates a scope per invocation automatically |
 
 ### How it starts (`Program.cs`)
 
@@ -260,9 +261,9 @@ Same shape as `ProcessInboxFunction`, but calls `IOutboxDispatcher.DispatchPendi
 ```json
 {
   "Values": {
-    "AzureWebJobsStorage":      "UseDevelopmentStorage=true",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "Relay__Database":          "relay-functions.db"
+    "Relay__Database": "relay-functions.db"
   }
 }
 ```
@@ -319,6 +320,7 @@ In `Relay.Sample.ManualInbox`, there are **no handler classes** and **no `IInbox
 3. A timer trigger (simulating a Service Bus trigger) calls `IInboxClient.GetPendingAsync()`, switches on `msg.Type` to deserialise, runs inline processing logic, then calls `MarkProcessedAsync` or `MarkFailedAsync`.
 
 This is useful when:
+
 - You don't want to create a handler class per message type.
 - Your processing logic is simple enough to live in the function itself.
 - You want full control over the process → mark-{processed,failed} lifecycle.
@@ -421,9 +423,9 @@ public async Task Run(
 ```json
 {
   "Values": {
-    "AzureWebJobsStorage":      "UseDevelopmentStorage=true",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "Relay__Database":          "relay-manual-inbox.db"
+    "Relay__Database": "relay-manual-inbox.db"
   }
 }
 ```
@@ -454,19 +456,203 @@ Tests cover: receive, deduplication, JSON payload round-trip, `GetPending`, `Mar
 
 ---
 
+## Relay.Sample.Trayport — Azure Functions (Client Mode + Outbox Fan-Out)
+
+```
+Relay.Sample.Trayport/
+├── Domain/
+│   ├── Events.cs                    TrayportTrade, TradeDto, RiskTradeEvent, SettlementRequest
+│   ├── TradeMapper.cs               Pure mapping: Trayport → internal → downstream events
+│   └── Publishers.cs                IOutboxPublisher<RiskTradeEvent>, IOutboxPublisher<SettlementRequest>
+├── Infrastructure/
+│   ├── SqliteInboxStore.cs          IInboxStore → SQLite
+│   ├── SqliteOutboxStore.cs         IOutboxStore → SQLite
+│   └── InfrastructureExtensions.cs  UseInboxClientSqliteStore() + UseSqliteStore() for outbox
+├── Functions/
+│   ├── TradeInboxFunction.cs        HTTP Triggers — receive trades, stats, dead-letters, requeue, seed
+│   ├── ProcessTradesFunction.cs     Timer Trigger — manual inbox processing + outbox fan-out
+│   └── DispatchOutboxFunction.cs    Timer Trigger — dispatch outbox messages to publishers
+├── Program.cs                       HostBuilder + AddInboxClient() + AddOutbox()
+├── host.json
+└── local.settings.json
+
+Relay.Sample.Trayport.Tests/
+└── TrayportTests.cs                 29 unit tests (mapper, inbox flow, outbox fan-out, correlation)
+```
+
+### How it differs from ManualInbox
+
+| Aspect                | ManualInbox                       | Trayport                                                                       |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------ |
+| **Domain**            | Payments — simple receive + log   | Energy trades — receive, map, fan-out                                          |
+| **Outbox**            | None                              | Yes — `IOutboxWriter` + `IOutboxDispatcher`                                    |
+| **Mapping**           | No mapping (process raw payloads) | `TradeMapper` converts `TrayportTrade` → `TradeDto` → downstream events        |
+| **Fan-out**           | N/A                               | Each trade produces a `RiskTradeEvent` + `SettlementRequest`                   |
+| **Correlation**       | N/A                               | `OutboxCorrelationContext.Set(msg.Id)` links outbox messages to inbox          |
+| **Source timestamps** | Supported but not central         | Core feature — trade amendments replace via `sourceTimestamp: trade.TradeDate` |
+
+### Architecture
+
+```
+Trayport API                        Your System
+─────────────                       ──────────────────────────────────────────────
+                                      ┌────────────────────────────┐
+  Trade event ──► HTTP Trigger ──►    │  Inbox (trades)            │
+  (TradeId,       TradeInbox          │  TrayportTrade payloads    │
+   amendment)     Function            │  idempotency: trade:{id}   │
+                                      │  source-timestamp: date    │
+                                      └──────────┬─────────────────┘
+                                                  │
+                                      ┌───────────▼─────────────────┐
+                                      │  Timer: ProcessTrades       │
+                                      │  1. Deserialize TrayportTrade│
+                                      │  2. Map → TradeDto          │
+                                      │  3. Set OutboxCorrelation   │
+                                      │  4. Write RiskTradeEvent    │
+                                      │  5. Write SettlementRequest │
+                                      │  6. MarkProcessed           │
+                                      └───────────┬─────────────────┘
+                                                  │
+                                      ┌───────────▼─────────────────┐
+                                      │  Outbox (trades)            │
+                                      │  RiskTradeEvent →           │
+                                      │    destination: risk.trades │
+                                      │  SettlementRequest →        │
+                                      │    destination: settlement  │
+                                      └───────────┬─────────────────┘
+                                                  │
+                                      ┌───────────▼─────────────────┐
+                                      │  Timer: DispatchOutbox      │
+                                      │  → RiskPublisher            │
+                                      │  → SettlementPublisher      │
+                                      └─────────────────────────────┘
+```
+
+### Program.cs — Client Mode Inbox + Named Outbox
+
+```csharp
+var host = new HostBuilder()
+    .ConfigureFunctionsWorkerDefaults()
+    .ConfigureServices((ctx, services) =>
+    {
+        var connStr = $"Data Source={ctx.Configuration["Relay:Database"] ?? "trayport-inbox.db"}";
+
+        // Inbox — client mode, no handlers
+        services.AddInboxClient(o =>
+        {
+            o.OnDeadLettered = (msg, ex) => { /* alert */ return Task.CompletedTask; };
+            o.OnMessageStored = msg => { /* log */ return Task.CompletedTask; };
+        })
+        .UseInboxClientSqliteStore(connStr, "TradeInboxMessages");
+
+        // Outbox — fan-out to risk + settlement
+        services.AddOutbox("trades", outbox => outbox
+            .WithPublisher<RiskTradeEvent, RiskPublisher>()
+            .WithPublisher<SettlementRequest, SettlementPublisher>()
+            .UseSqliteStore(connStr, "TradeOutboxMessages"));
+    })
+    .Build();
+```
+
+### Trade Mapping
+
+`TradeMapper` is a pure static class — no dependencies, easily unit-testable:
+
+```csharp
+// TrayportTrade → internal canonical model
+var dto = TradeMapper.Map(raw);  // TPT-{TradeId}, normalised counterparty, DateOnly
+
+// Internal model → downstream events
+var risk = TradeMapper.ToRiskEvent(dto);        // notional = price × volume
+var settlement = TradeMapper.ToSettlement(dto);  // T+2 settlement date
+```
+
+### Manual Processing with Outbox Fan-Out
+
+The key difference from `ManualInbox` — after mapping, the timer writes two outbox messages per trade:
+
+```csharp
+foreach (var msg in await inbox.GetPendingAsync("trades", batchSize: 50, ct))
+{
+    var raw = JsonSerializer.Deserialize<TrayportTrade>(msg.Payload)!;
+    var dto = TradeMapper.Map(raw);
+
+    // Correlated — links outbox messages back to this inbox message
+    using (OutboxCorrelationContext.Set(msg.Id.ToString()))
+    {
+        await outbox.WriteAsync(TradeMapper.ToRiskEvent(dto), "trades", "risk.trades", ct);
+        await outbox.WriteAsync(TradeMapper.ToSettlement(dto), "trades", "settlement.requests", ct);
+    }
+
+    await inbox.MarkProcessedAsync(msg, ct);
+}
+```
+
+### Source-Timestamp Amendments
+
+Trayport trade amendments use the trade's `TradeDate` as the source timestamp. If the same `TradeId` arrives with a newer `TradeDate`, the inbox payload is replaced and the message re-enters the processing pipeline:
+
+```csharp
+var result = await inbox.ReceiveAsync(
+    inboxName: "trades",
+    message: trade,
+    idempotencyKey: $"trade:{trade.TradeId}",
+    source: "trayport-api",
+    sourceTimestamp: trade.TradeDate,
+    ct: ct);
+
+// result.WasUpdated == true if the payload was replaced
+```
+
+### Running locally
+
+```bash
+cd Relay.Sample.Trayport
+func start
+```
+
+Or:
+
+```bash
+cd Relay.Sample.Trayport
+dotnet run
+```
+
+Seed demo trades:
+
+```bash
+curl -X POST http://localhost:7071/api/demo/seed
+```
+
+Check stats (shows both inbox and outbox):
+
+```bash
+curl http://localhost:7071/api/trades/stats
+```
+
+### Tests
+
+```bash
+dotnet test Relay.Sample.Trayport.Tests
+```
+
+Tests cover: `TradeMapper` (mapping, normalisation, notional calculation, T+2), inbox receive, deduplication, source-timestamp amendments, manual processing, `MarkProcessed`, `MarkFailed`, dead-lettering, hooks, stats, requeue, full map→fan-out flow, outbox payload verification, `OutboxCorrelationContext` scoping, and correlation isolation between messages.
+
+---
+
 ## SQLite store
 
-Both samples share the same SQLite store implementation (`Infrastructure/SqliteInboxStore.cs` and `SqliteOutboxStore.cs`). Key differences from the built-in `SqlInboxStore` / `SqlOutboxStore` (which target SQL Server):
+Both samples share the same SQLite store implementation (`Infrastructure/SqliteInboxStore.cs` and `SqliteOutboxStore.cs`). The Trayport sample includes both inbox and outbox SQLite stores, while ManualInbox only uses the inbox store. Key differences from the built-in `SqlInboxStore` / `SqlOutboxStore` (which target SQL Server):
 
-| SQL Server store | SQLite store |
-|---|---|
-| `UNIQUEIDENTIFIER` | `TEXT` (GUIDs stored as strings) |
-| `NVARCHAR(MAX)` | `TEXT` |
-| `SYSUTCDATETIME()` | `datetime('now')` |
-| `TOP (@n)` | `LIMIT @n` |
-| `WITH (UPDLOCK, READPAST)` | Not needed (no hint syntax in SQLite) |
-| `IF NOT EXISTS (SELECT 1 FROM sys.tables ...)` | `CREATE TABLE IF NOT EXISTS` |
-| Multi-result batch for stats | Separate commands per query |
+| SQL Server store                               | SQLite store                          |
+| ---------------------------------------------- | ------------------------------------- |
+| `UNIQUEIDENTIFIER`                             | `TEXT` (GUIDs stored as strings)      |
+| `NVARCHAR(MAX)`                                | `TEXT`                                |
+| `SYSUTCDATETIME()`                             | `datetime('now')`                     |
+| `TOP (@n)`                                     | `LIMIT @n`                            |
+| `WITH (UPDLOCK, READPAST)`                     | Not needed (no hint syntax in SQLite) |
+| `IF NOT EXISTS (SELECT 1 FROM sys.tables ...)` | `CREATE TABLE IF NOT EXISTS`          |
+| Multi-result batch for stats                   | Separate commands per query           |
 
 Schema is created automatically on startup by `SqliteSchemaInitializer` (a hosted service registered by `AddSqliteRelayStores`).
 
@@ -476,7 +662,17 @@ Schema is created automatically on startup by `SqliteSchemaInitializer` (a hoste
 
 When `o.CorrelationScope = OutboxCorrelationContext.Set` is set, the inbox processor calls `OutboxCorrelationContext.Set(inboxMessageId)` before invoking each handler. `IOutboxWriter` reads that ambient async-local value and stamps every outbox message it writes with `CorrelationId = inboxMessageId`.
 
-This means you can query:
+In client mode (like `Relay.Sample.Trayport`), you set the correlation context manually:
+
+```csharp
+using (OutboxCorrelationContext.Set(msg.Id.ToString()))
+{
+    await outbox.WriteAsync(riskEvent, "trades", "risk.trades", ct);
+    await outbox.WriteAsync(settlement, "trades", "settlement.requests", ct);
+}
+```
+
+Either way, you can query:
 
 ```csharp
 var outboxMessages = await outboxStore.GetByCorrelationIdAsync(inboxMessageId);

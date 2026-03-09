@@ -43,8 +43,6 @@ public static class RelayServiceCollectionExtensions
 
 public sealed class RelayBuilder(IServiceCollection services)
 {
-    private string? _connectionString;
-
     public RelayBuilder AddChannel(string channelName, Action<ChannelBuilder> configure)
     {
         var channelBuilder = new ChannelBuilder(services, channelName);
@@ -62,16 +60,16 @@ public sealed class RelayBuilder(IServiceCollection services)
 
         services.UseSqlInboxStore(connectionString, o =>
         {
-            o.TableName        = opts.InboxTableName;
+            o.TableName = opts.InboxTableName;
             o.AutoMigrateSchema = opts.AutoMigrateSchema;
-            o.UseSkipLocked    = opts.UseSkipLocked;
+            o.UseSkipLocked = opts.UseSkipLocked;
         });
 
         services.UseSqlOutboxStore(connectionString, o =>
         {
-            o.TableName        = opts.OutboxTableName;
+            o.TableName = opts.OutboxTableName;
             o.AutoMigrateSchema = opts.AutoMigrateSchema;
-            o.UseSkipLocked    = opts.UseSkipLocked;
+            o.UseSkipLocked = opts.UseSkipLocked;
         });
 
         return this;
@@ -113,8 +111,8 @@ public sealed class ChannelBuilder(IServiceCollection services, string channelNa
 
 public sealed class SqlStoreOptions
 {
-    public string InboxTableName  { get; set; } = "InboxMessages";
+    public string InboxTableName { get; set; } = "InboxMessages";
     public string OutboxTableName { get; set; } = "OutboxMessages";
     public bool AutoMigrateSchema { get; set; } = true;
-    public bool UseSkipLocked     { get; set; } = true;
+    public bool UseSkipLocked { get; set; } = true;
 }

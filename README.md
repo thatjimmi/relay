@@ -61,7 +61,9 @@ Relay/
 ├── Relay.Sample/                 # ASP.NET Core minimal API sample (SQLite)
 ├── Relay.Sample.AzureFunctions/  # Azure Functions (Isolated Worker) sample — handler mode (SQLite)
 ├── Relay.Sample.ManualInbox/     # Azure Functions (Isolated Worker) sample — client mode (SQLite)
-└── Relay.Sample.ManualInbox.Tests/ # ManualInbox client-mode unit tests (xUnit)
+├── Relay.Sample.ManualInbox.Tests/ # ManualInbox client-mode unit tests (xUnit)
+├── Relay.Sample.Trayport/        # Azure Functions sample — client mode + outbox fan-out (SQLite)
+└── Relay.Sample.Trayport.Tests/  # Trayport inbox + outbox unit tests (xUnit)
 ```
 
 ---
@@ -352,12 +354,12 @@ Some external systems send the same logical message multiple times with an evolv
 
 Pass the **source timestamp** (the time the event was produced by the external system) to allow the inbox to decide:
 
-| Situation | Result |
-|---|---|
-| Key does not exist | `Stored` — normal insert |
-| Key exists, incoming timestamp is newer | `Updated` — payload replaced, message reset to Pending |
-| Key exists, incoming timestamp is same or older | `Duplicate` — ignored |
-| Key exists, no timestamp on incoming call | `Duplicate` — original behaviour preserved |
+| Situation                                       | Result                                                 |
+| ----------------------------------------------- | ------------------------------------------------------ |
+| Key does not exist                              | `Stored` — normal insert                               |
+| Key exists, incoming timestamp is newer         | `Updated` — payload replaced, message reset to Pending |
+| Key exists, incoming timestamp is same or older | `Duplicate` — ignored                                  |
+| Key exists, no timestamp on incoming call       | `Duplicate` — original behaviour preserved             |
 
 ```csharp
 // With source timestamp only
