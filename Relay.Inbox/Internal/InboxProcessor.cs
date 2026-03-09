@@ -29,6 +29,7 @@ internal sealed class InboxProcessor(
 
             try
             {
+                using var correlationScope = options.CorrelationScope?.Invoke(msg.Id.ToString());
                 await DispatchAsync(msg, inboxName, ct);
 
                 msg.ProcessedAt = DateTime.UtcNow;
@@ -85,7 +86,8 @@ internal sealed class InboxProcessor(
         var messageType = registry.Resolve(inboxName, msg.Type)
             ?? throw new InvalidOperationException(
                 $"No handler registered for type '{msg.Type}' in inbox '{inboxName}'. " +
-                $"Did you forget to call .WithHandler<{msg.Type}, YourHandler>()?");
+                $"Did you forget to call .WithHandler<{msg.Type}, YourHandler>()? " +
+                $"For handler-free processing use IInboxClient instead.");
 
         var handlerType = typeof(IInboxHandler<>).MakeGenericType(messageType);
         var handler = sp.GetService(handlerType)
@@ -96,7 +98,6 @@ internal sealed class InboxProcessor(
             ?? throw new InvalidOperationException($"Failed to deserialize payload for '{msg.Type}'.");
 
         var handleMethod = handlerType.GetMethod(nameof(IInboxHandler<object>.HandleAsync))!;
-        using var correlationScope = options.CorrelationScope?.Invoke(msg.Id.ToString());
         await (Task)handleMethod.Invoke(handler, [payload, ct])!;
     }
 }

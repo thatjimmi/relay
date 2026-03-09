@@ -46,6 +46,8 @@ public interface IInboxReceiver<TMessage>
 /// Process pending messages for a named inbox. Call this from
 /// wherever makes sense: a Hangfire job, a minimal API endpoint,
 /// a triggered Azure Function, a test.
+/// Requires handlers registered via <c>.WithHandler&lt;T, THandler&gt;()</c>.
+/// For handler-free processing, use <see cref="IInboxClient"/> instead.
 /// </summary>
 public interface IInboxProcessor
 {
@@ -53,6 +55,46 @@ public interface IInboxProcessor
         string inboxName,
         int batchSize = 50,
         CancellationToken ct = default);
+}
+
+/// <summary>
+/// Raw-mode inbox client — no handler classes or DI registrations needed.
+/// Use <c>AddInboxClient()</c> to register.
+/// <para>
+/// <b>Receive:</b> supply a typed message and an explicit idempotency key; all deduplication,
+/// source-timestamp update, and hook behaviour is identical to <see cref="IInboxReceiver{TMessage}"/>.
+/// The key is scoped to the inbox name internally — pass the logical key (e.g. <c>$"trade:{id}"</c>).
+/// </para>
+/// <para>
+/// <b>Process:</b> fetch pending messages with <see cref="GetPendingAsync"/>, do your own work,
+/// then call <see cref="MarkProcessedAsync"/> or <see cref="MarkFailedAsync"/>.
+/// <see cref="MarkFailedAsync"/> automatically dead-letters after <c>maxRetries</c> attempts
+/// and fires the configured <c>OnFailed</c> / <c>OnDeadLettered</c> hooks.
+/// </para>
+/// </summary>
+public interface IInboxClient
+{
+    // ── Receive ──────────────────────────────────────────────────────────────
+
+    Task<InboxReceiveResult> ReceiveAsync(string inboxName, object message, string idempotencyKey, CancellationToken ct = default);
+    Task<InboxReceiveResult> ReceiveAsync(string inboxName, object message, string idempotencyKey, string source, CancellationToken ct = default);
+    Task<InboxReceiveResult> ReceiveAsync(string inboxName, object message, string idempotencyKey, DateTime sourceTimestamp, CancellationToken ct = default);
+    Task<InboxReceiveResult> ReceiveAsync(string inboxName, object message, string idempotencyKey, string source, DateTime sourceTimestamp, CancellationToken ct = default);
+
+    // ── Process ───────────────────────────────────────────────────────────────
+
+    /// <summary>Fetch pending (and previously failed) messages for a named inbox.</summary>
+    Task<IReadOnlyList<InboxMessage>> GetPendingAsync(string inboxName, int batchSize = 50, CancellationToken ct = default);
+
+    /// <summary>Mark a message as successfully processed. Fires the <c>OnProcessed</c> hook.</summary>
+    Task MarkProcessedAsync(InboxMessage message, CancellationToken ct = default);
+
+    /// <summary>
+    /// Mark a message as failed. Automatically dead-letters and fires the <c>OnDeadLettered</c>
+    /// hook once <paramref name="maxRetries"/> is reached; otherwise increments the retry counter
+    /// and fires <c>OnFailed</c>.
+    /// </summary>
+    Task MarkFailedAsync(InboxMessage message, string error, int maxRetries = 5, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -104,6 +146,7 @@ public interface IInboxStore : IInboxQuery, IInboxRequeue
     Task<bool> SetIdempotencyKeyAsync(Guid id, string idempotencyKey, CancellationToken ct = default);
 
     Task DeleteAsync(Guid id, CancellationToken ct = default);
+    Task<InboxMessage?> GetByIdAsync(Guid id, CancellationToken ct = default);
     Task<IReadOnlyList<InboxMessage>> GetPendingAsync(string inboxName, int batchSize, CancellationToken ct = default);
     Task MarkProcessingAsync(Guid id, CancellationToken ct = default);
     Task MarkProcessedAsync(Guid id, CancellationToken ct = default);

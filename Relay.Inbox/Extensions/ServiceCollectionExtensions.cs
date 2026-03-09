@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Relay.Inbox.Core;
 using Relay.Inbox.Internal;
@@ -48,10 +49,59 @@ public static class ServiceCollectionExtensions
             registry = (HandlerRegistry)existingRegistry.ImplementationInstance!;
         }
 
+        // Ensure a default InboxOptions is always available so InboxProcessor
+        // can be resolved even when WithOptions/hooks are never called.
+        services.TryAddSingleton(new InboxOptions());
+
         var storeResolver = EnsureStoreResolver(services);
 
         var builder = new InboxBuilder(services, inboxName, registry, storeResolver);
         configure(builder);
+        return services;
+    }
+
+    /// <summary>
+    /// Register the raw-mode inbox client (<see cref="IInboxClient"/>) without any handler
+    /// infrastructure. Use this when you want to receive, fetch, and acknowledge messages
+    /// yourself — no <see cref="IInboxHandler{TMessage}"/> implementations needed.
+    /// <para>
+    /// You still need to configure a store via <c>.UseSqlInboxStore()</c> or
+    /// <c>.UseInMemoryInboxStore()</c>.
+    /// </para>
+    /// </summary>
+    /// <example>
+    /// builder.Services
+    ///     .AddInboxClient()
+    ///     .UseSqlInboxStore("Server=.;Database=MyApp;...");
+    /// </example>
+    public static IServiceCollection AddInboxClient(
+        this IServiceCollection services,
+        Action<InboxOptions>? configure = null)
+    {
+        var options = new InboxOptions();
+        configure?.Invoke(options);
+        services.TryAddSingleton(options);
+        EnsureStoreResolver(services);
+        services.TryAddScoped<IInboxClient, InboxClient>();
+        return services;
+    }
+
+    /// <summary>
+    /// Register a custom <see cref="IInboxStore"/> as the global default store for all inboxes.
+    /// Useful when using <see cref="AddInboxClient"/> with a store implementation that lives
+    /// outside the main package (e.g. a SQLite or MongoDB store in a sample/host project).
+    /// </summary>
+    public static IServiceCollection UseInboxStore(
+        this IServiceCollection services,
+        IInboxStore store)
+    {
+        services.AddSingleton<IInboxStore>(store);
+        services.AddSingleton(store.GetType(), store);
+
+        var resolver = EnsureStoreResolver(services);
+        resolver.Register("*", store);
+
+        EnsureSchemaInitializerInternal(services);
         return services;
     }
 

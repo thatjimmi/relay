@@ -173,6 +173,22 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
     // Read path — LIMIT instead of TOP, no table hints
     // -------------------------------------------------------------------------
 
+    public async Task<InboxMessage?> GetByIdAsync(Guid id, CancellationToken ct = default)
+    {
+        var sql = $"""
+            SELECT Id, InboxName, Type, IdempotencyKey, Payload,
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
+            FROM [{_table}]
+            WHERE Id = @id
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@id", id.ToString());
+        var results = await ReadMessagesAsync(cmd, ct);
+        return results.Count > 0 ? results[0] : null;
+    }
+
     public async Task<IReadOnlyList<InboxMessage>> GetPendingAsync(
         string inboxName, int batchSize, CancellationToken ct = default)
     {

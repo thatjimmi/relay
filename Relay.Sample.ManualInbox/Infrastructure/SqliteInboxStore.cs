@@ -1,11 +1,11 @@
 using Microsoft.Data.Sqlite;
 using Relay.Inbox.Core;
 
-namespace Relay.Sample.Infrastructure;
+namespace Relay.Sample.ManualInbox.Infrastructure;
 
 /// <summary>
 /// IInboxStore backed by SQLite via Microsoft.Data.Sqlite.
-/// Schema auto-created on startup via EnsureSchemaAsync (called by SqliteSchemaInitializer).
+/// Schema auto-created on startup via EnsureSchemaAsync (called by the library's schema initializer).
 /// </summary>
 public sealed class SqliteInboxStore(string connectionString, string tableName = "InboxMessages") : IInboxStore
 {
@@ -49,8 +49,6 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         await cmd.ExecuteNonQueryAsync(ct);
 
         // Add SourceTimestamp to existing tables that predate this column.
-        // Use pragma_table_info rather than ALTER TABLE + catch, as SQLite may throw
-        // NullReferenceException or InvalidOperationException in some hosting environments.
         await using var checkCmd = new SqliteCommand(
             $"SELECT COUNT(*) FROM pragma_table_info('{_table}') WHERE name='SourceTimestamp'", conn);
         var colExists = (long)(await checkCmd.ExecuteScalarAsync(ct))! > 0;
@@ -251,7 +249,6 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
 
     // -------------------------------------------------------------------------
     // IInboxQuery — stats, dead-letters, purge
-    // SQLite doesn't support multi-result batches reliably, so use separate cmds.
     // -------------------------------------------------------------------------
 
     public async Task<InboxStats> GetStatsAsync(string inboxName, CancellationToken ct = default)
@@ -415,18 +412,18 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
 
     private static InboxMessage MapRow(SqliteDataReader r) => new()
     {
-        Id = Guid.Parse(r.GetString(0)),
-        InboxName = r.GetString(1),
-        Type = r.GetString(2),
+        Id             = Guid.Parse(r.GetString(0)),
+        InboxName      = r.GetString(1),
+        Type           = r.GetString(2),
         IdempotencyKey = r.IsDBNull(3) ? null : r.GetString(3),
-        Payload = r.GetString(4),
-        Status = (InboxMessageStatus)r.GetInt32(5),
-        ReceivedAt = DateTime.Parse(r.GetString(6)),
-        ProcessedAt = r.IsDBNull(7) ? null : DateTime.Parse(r.GetString(7)),
-        Error = r.IsDBNull(8) ? null : r.GetString(8),
-        RetryCount = r.GetInt32(9),
-        TraceId         = r.IsDBNull(10) ? null : r.GetString(10),
-        Source          = r.IsDBNull(11) ? null : r.GetString(11),
+        Payload        = r.GetString(4),
+        Status         = (InboxMessageStatus)r.GetInt32(5),
+        ReceivedAt     = DateTime.Parse(r.GetString(6)),
+        ProcessedAt    = r.IsDBNull(7) ? null : DateTime.Parse(r.GetString(7)),
+        Error          = r.IsDBNull(8) ? null : r.GetString(8),
+        RetryCount     = r.GetInt32(9),
+        TraceId        = r.IsDBNull(10) ? null : r.GetString(10),
+        Source         = r.IsDBNull(11) ? null : r.GetString(11),
         SourceTimestamp = r.IsDBNull(12) ? null : DateTime.Parse(r.GetString(12), null, System.Globalization.DateTimeStyles.RoundtripKind),
     };
 

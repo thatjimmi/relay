@@ -79,6 +79,9 @@ public sealed class InMemoryInboxStore : IInboxStore
     // Read path
     // -------------------------------------------------------------------------
 
+    public Task<InboxMessage?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
+        Task.FromResult(_byId.TryGetValue(id, out var m) ? m : null);
+
     public Task<IReadOnlyList<InboxMessage>> GetPendingAsync(
         string inboxName, int batchSize, CancellationToken ct = default)
     {
