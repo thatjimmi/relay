@@ -23,7 +23,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
                 Id              TEXT    NOT NULL PRIMARY KEY,
                 InboxName       TEXT    NOT NULL,
                 Type            TEXT    NOT NULL,
-                IdempotencyKey  TEXT    NOT NULL UNIQUE,
+                IdempotencyKey  TEXT    NULL,
                 Payload         TEXT    NOT NULL,
                 Status          INTEGER NOT NULL DEFAULT 0,
                 ReceivedAt      TEXT    NOT NULL,
@@ -34,6 +34,10 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
                 Source          TEXT    NULL,
                 SourceTimestamp TEXT    NULL
             );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS UQ_{_table}_IdempotencyKey
+                ON [{_table}] (IdempotencyKey)
+                WHERE IdempotencyKey IS NOT NULL;
 
             CREATE INDEX IF NOT EXISTS IX_{_table}_InboxName_Status
                 ON [{_table}] (InboxName, Status, ReceivedAt);
@@ -126,13 +130,42 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         cmd.Parameters.AddWithValue("@id",       message.Id.ToString());
         cmd.Parameters.AddWithValue("@inboxName", message.InboxName);
         cmd.Parameters.AddWithValue("@type",     message.Type);
-        cmd.Parameters.AddWithValue("@key",      message.IdempotencyKey);
+        cmd.Parameters.AddWithValue("@key",      (object?)message.IdempotencyKey ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@payload",  message.Payload);
         cmd.Parameters.AddWithValue("@status",   (int)message.Status);
         cmd.Parameters.AddWithValue("@receivedAt", message.ReceivedAt.ToString("O"));
         cmd.Parameters.AddWithValue("@traceId",  (object?)message.TraceId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@source",   (object?)message.Source ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@sourceTs", (object?)message.SourceTimestamp?.ToString("O") ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<bool> SetIdempotencyKeyAsync(
+        Guid id, string idempotencyKey, CancellationToken ct = default)
+    {
+        var sql = $"""
+            UPDATE [{_table}]
+            SET IdempotencyKey = @key
+            WHERE Id = @id
+              AND IdempotencyKey IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM [{_table}] WHERE IdempotencyKey = @key
+              )
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd  = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@key", idempotencyKey);
+        cmd.Parameters.AddWithValue("@id",  id.ToString());
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+    }
+
+    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        var sql = $"DELETE FROM [{_table}] WHERE Id = @id";
+        await using var conn = await OpenAsync(ct);
+        await using var cmd  = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@id", id.ToString());
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -368,7 +401,7 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         Id = Guid.Parse(r.GetString(0)),
         InboxName = r.GetString(1),
         Type = r.GetString(2),
-        IdempotencyKey = r.GetString(3),
+        IdempotencyKey = r.IsDBNull(3) ? null : r.GetString(3),
         Payload = r.GetString(4),
         Status = (InboxMessageStatus)r.GetInt32(5),
         ReceivedAt = DateTime.Parse(r.GetString(6)),

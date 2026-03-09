@@ -96,6 +96,14 @@ public interface IInboxStore : IInboxQuery, IInboxRequeue
     Task<bool> UpdateIfNewerAsync(string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default);
 
     Task InsertAsync(InboxMessage message, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sets the idempotency key on a message that was inserted without one.
+    /// Returns false if another message already holds that key (duplicate).
+    /// </summary>
+    Task<bool> SetIdempotencyKeyAsync(Guid id, string idempotencyKey, CancellationToken ct = default);
+
+    Task DeleteAsync(Guid id, CancellationToken ct = default);
     Task<IReadOnlyList<InboxMessage>> GetPendingAsync(string inboxName, int batchSize, CancellationToken ct = default);
     Task MarkProcessingAsync(Guid id, CancellationToken ct = default);
     Task MarkProcessedAsync(Guid id, CancellationToken ct = default);

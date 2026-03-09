@@ -25,7 +25,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
                     Id              UNIQUEIDENTIFIER    NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
                     InboxName       NVARCHAR(100)       NOT NULL,
                     [Type]          NVARCHAR(250)       NOT NULL,
-                    IdempotencyKey  NVARCHAR(500)       NOT NULL,
+                    IdempotencyKey  NVARCHAR(500)       NULL,
                     Payload         NVARCHAR(MAX)       NOT NULL,
                     Status          TINYINT             NOT NULL DEFAULT 0,
                     ReceivedAt      DATETIME2           NOT NULL DEFAULT SYSUTCDATETIME(),
@@ -34,9 +34,12 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
                     RetryCount      INT                 NOT NULL DEFAULT 0,
                     TraceId         NVARCHAR(100)       NULL,
                     Source          NVARCHAR(200)       NULL,
-
-                    CONSTRAINT UQ_{table}_IdempotencyKey UNIQUE (IdempotencyKey)
+                    SourceTimestamp DATETIME2           NULL
                 );
+
+                CREATE UNIQUE NONCLUSTERED INDEX UQ_{table}_IdempotencyKey
+                    ON [{table}] (IdempotencyKey)
+                    WHERE IdempotencyKey IS NOT NULL;
 
                 CREATE NONCLUSTERED INDEX IX_{table}_InboxName_Status_ReceivedAt
                     ON [{table}] (InboxName, Status, ReceivedAt)
@@ -49,6 +52,22 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
             )
             BEGIN
                 ALTER TABLE [{table}] ADD SourceTimestamp DATETIME2 NULL;
+            END
+
+            -- Migrate existing databases: make IdempotencyKey nullable and switch to filtered unique index
+            IF EXISTS (
+                SELECT 1 FROM sys.columns c
+                JOIN sys.tables t ON c.object_id = t.object_id
+                WHERE t.name = '{table}' AND c.name = 'IdempotencyKey' AND c.is_nullable = 0
+            )
+            BEGIN
+                IF EXISTS (SELECT 1 FROM sys.key_constraints WHERE name = 'UQ_{table}_IdempotencyKey')
+                    ALTER TABLE [{table}] DROP CONSTRAINT UQ_{table}_IdempotencyKey;
+
+                ALTER TABLE [{table}] ALTER COLUMN IdempotencyKey NVARCHAR(500) NULL;
+
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_{table}_IdempotencyKey' AND object_id = OBJECT_ID(N'[{table}]'))
+                    EXEC('CREATE UNIQUE NONCLUSTERED INDEX UQ_{table}_IdempotencyKey ON [{table}] (IdempotencyKey) WHERE IdempotencyKey IS NOT NULL');
             END
             """;
 
@@ -134,7 +153,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         cmd.Parameters.Add("@id",         SqlDbType.UniqueIdentifier).Value = message.Id;
         cmd.Parameters.Add("@inboxName",  SqlDbType.NVarChar, 100).Value   = message.InboxName;
         cmd.Parameters.Add("@type",       SqlDbType.NVarChar, 250).Value   = message.Type;
-        cmd.Parameters.Add("@key",        SqlDbType.NVarChar, 500).Value   = message.IdempotencyKey;
+        cmd.Parameters.Add("@key",        SqlDbType.NVarChar, 500).Value   = (object?)message.IdempotencyKey ?? DBNull.Value;
         cmd.Parameters.Add("@payload",    SqlDbType.NVarChar, -1).Value    = message.Payload;
         cmd.Parameters.Add("@status",     SqlDbType.TinyInt).Value         = (int)message.Status;
         cmd.Parameters.Add("@receivedAt", SqlDbType.DateTime2).Value       = message.ReceivedAt;
@@ -142,6 +161,38 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         cmd.Parameters.Add("@source",     SqlDbType.NVarChar, 200).Value   = (object?)message.Source  ?? DBNull.Value;
         cmd.Parameters.Add("@sourceTs",   SqlDbType.DateTime2).Value       = (object?)message.SourceTimestamp ?? DBNull.Value;
 
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<bool> SetIdempotencyKeyAsync(
+        Guid id, string idempotencyKey, CancellationToken ct = default)
+    {
+        // Atomically set the key only when no other row holds it yet.
+        var sql = $"""
+            UPDATE [{_table}]
+            SET IdempotencyKey = @key
+            WHERE Id = @id
+              AND IdempotencyKey IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM [{_table}] WHERE IdempotencyKey = @key
+              )
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd  = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@key", SqlDbType.NVarChar, 500).Value  = idempotencyKey;
+        cmd.Parameters.Add("@id",  SqlDbType.UniqueIdentifier).Value = id;
+
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+    }
+
+    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        var sql = $"DELETE FROM [{_table}] WHERE Id = @id";
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd  = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -379,7 +430,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         Id              = r.GetGuid(0),
         InboxName       = r.GetString(1),
         Type            = r.GetString(2),
-        IdempotencyKey  = r.GetString(3),
+        IdempotencyKey  = r.IsDBNull(3) ? null : r.GetString(3),
         Payload         = r.GetString(4),
         Status          = (InboxMessageStatus)r.GetByte(5),
         ReceivedAt      = r.GetDateTime(6),

@@ -5,7 +5,7 @@ public sealed class InboxMessage
     public Guid Id { get; init; } = Guid.NewGuid();
     public required string InboxName { get; init; }
     public required string Type { get; init; }
-    public required string IdempotencyKey { get; init; }
+    public string? IdempotencyKey { get; set; }
     public required string Payload { get; set; }
     public InboxMessageStatus Status { get; set; } = InboxMessageStatus.Pending;
     public DateTime ReceivedAt { get; set; } = DateTime.UtcNow;

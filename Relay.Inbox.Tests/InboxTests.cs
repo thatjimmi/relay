@@ -558,6 +558,116 @@ public class InboxProcessorTests
 
 // ---------------------------------------------------------------------------
 
+/// <summary>
+/// Verifies the insert-first, derive-key-second flow introduced so that raw
+/// payloads are always persisted before the idempotency key is touched.
+/// </summary>
+public class InboxInsertFirstTests
+{
+    // A handler whose key derivation can be made to throw on demand.
+    private sealed class ThrowingKeyHandler(Func<TradeExecutedEvent, string> keyFn) : IInboxHandler<TradeExecutedEvent>
+    {
+        public string GetIdempotencyKey(TradeExecutedEvent msg) => keyFn(msg);
+        public Task HandleAsync(TradeExecutedEvent msg, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private static TradeExecutedEvent NewTrade(string id = "TRD-001") =>
+        new("NYSE", id, "AAPL", 189.50m, 100, DateTime.UtcNow);
+
+    [Fact]
+    public async Task Message_is_persisted_before_key_is_derived()
+    {
+        // Arrange: key derivation throws after a short delay so we can observe the insert.
+        var store   = new InMemoryInboxStore();
+        var handler = new ThrowingKeyHandler(_ => throw new InvalidOperationException("parse failed"));
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", new InboxOptions());
+
+        // Act & Assert: ReceiveAsync propagates the exception but the raw payload is in the store.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => receiver.ReceiveAsync(NewTrade()));
+
+        // The record with null IdempotencyKey was inserted and never cleaned up (key derivation failed).
+        Assert.Single(store.All);
+        Assert.Null(store.All[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Normal_receive_sets_idempotency_key_on_stored_message()
+    {
+        var store   = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", new InboxOptions());
+
+        await receiver.ReceiveAsync(NewTrade());
+
+        Assert.Single(store.All);
+        Assert.NotNull(store.All[0].IdempotencyKey);
+        Assert.Contains("TRD-001", store.All[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Duplicate_cleans_up_orphan_and_leaves_one_record()
+    {
+        var store   = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", new InboxOptions());
+        var trade = NewTrade();
+
+        await receiver.ReceiveAsync(trade);
+        var result = await receiver.ReceiveAsync(trade); // same trade → duplicate
+
+        Assert.True(result.WasDuplicate);
+        Assert.Single(store.All); // orphan was deleted
+        Assert.NotNull(store.All[0].IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task SetIdempotencyKeyAsync_returns_false_when_key_already_exists()
+    {
+        var store = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", new InboxOptions());
+
+        await receiver.ReceiveAsync(NewTrade("TRD-001"));
+
+        // Manually attempt to claim the same key for a different record.
+        var orphan = new InboxMessage { InboxName = "market", Type = "x", Payload = "{}" };
+        await store.InsertAsync(orphan);
+        var claimed = await store.SetIdempotencyKeyAsync(orphan.Id, "market:trade:NYSE:TRD-001");
+
+        Assert.False(claimed);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_removes_record_with_null_key()
+    {
+        var store  = new InMemoryInboxStore();
+        var orphan = new InboxMessage { InboxName = "market", Type = "x", Payload = "{}" };
+        await store.InsertAsync(orphan);
+
+        await store.DeleteAsync(orphan.Id);
+
+        Assert.Empty(store.All);
+    }
+
+    [Fact]
+    public async Task Duplicate_with_source_timestamp_cleans_up_orphan()
+    {
+        var store   = new InMemoryInboxStore();
+        var handler = new TradeExecutedHandler();
+        var receiver = new InboxReceiver<TradeExecutedEvent>(store, handler, "market", new InboxOptions());
+        var trade = NewTrade();
+        var ts = new DateTime(2024, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+
+        await receiver.ReceiveAsync(trade, ts);
+        var result = await receiver.ReceiveAsync(trade, ts); // same timestamp → duplicate
+
+        Assert.True(result.WasDuplicate);
+        Assert.Single(store.All); // orphan was deleted, original remains
+    }
+}
+
+// ---------------------------------------------------------------------------
+
 public class InboxIsolationTests
 {
     [Fact]

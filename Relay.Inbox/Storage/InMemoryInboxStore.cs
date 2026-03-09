@@ -49,8 +49,29 @@ public sealed class InMemoryInboxStore : IInboxStore
 
     public Task InsertAsync(InboxMessage message, CancellationToken ct = default)
     {
-        _byKey[message.IdempotencyKey] = message;
         _byId[message.Id] = message;
+        if (message.IdempotencyKey is not null)
+            _byKey[message.IdempotencyKey] = message;
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> SetIdempotencyKeyAsync(Guid id, string idempotencyKey, CancellationToken ct = default)
+    {
+        if (_byKey.ContainsKey(idempotencyKey))
+            return Task.FromResult(false);
+
+        if (!_byId.TryGetValue(id, out var m))
+            return Task.FromResult(false);
+
+        m.IdempotencyKey = idempotencyKey;
+        _byKey[idempotencyKey] = m;
+        return Task.FromResult(true);
+    }
+
+    public Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        if (_byId.TryRemove(id, out var m) && m.IdempotencyKey is not null)
+            _byKey.TryRemove(m.IdempotencyKey, out _);
         return Task.CompletedTask;
     }
 
@@ -161,7 +182,8 @@ public sealed class InMemoryInboxStore : IInboxStore
         foreach (var m in toRemove)
         {
             _byId.TryRemove(m.Id, out _);
-            _byKey.TryRemove(m.IdempotencyKey, out _);
+            if (m.IdempotencyKey is not null)
+                _byKey.TryRemove(m.IdempotencyKey, out _);
         }
 
         return Task.FromResult(toRemove.Count);
