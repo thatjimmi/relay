@@ -131,6 +131,20 @@ public interface IInboxStore : IInboxQuery, IInboxRequeue
     Task<(Guid Id, DateTime? SourceTimestamp)?> TryGetAsync(string idempotencyKey, CancellationToken ct = default);
 
     /// <summary>
+    /// Returns the full message for an idempotency key, or null if not found. Useful for
+    /// dashboards or admin tooling that needs status, retry count, and error alongside the payload.
+    /// </summary>
+    Task<InboxMessage?> GetByIdempotencyKeyAsync(string idempotencyKey, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns all messages in <paramref name="inboxName"/> whose idempotency key starts with
+    /// <paramref name="keyPrefix"/>, ordered oldest-first. Useful for grouping a logical operation
+    /// and its retry attempts (e.g. base key + "-redo-1", "-redo-2", ...) under one view.
+    /// </summary>
+    Task<IReadOnlyList<InboxMessage>> GetByIdempotencyKeyPrefixAsync(
+        string inboxName, string keyPrefix, CancellationToken ct = default);
+
+    /// <summary>
     /// Updates payload + source timestamp for an existing key and resets status to Pending,
     /// but only if the stored SourceTimestamp is null or older than <paramref name="sourceTimestamp"/>.
     /// Returns true if the update was applied.

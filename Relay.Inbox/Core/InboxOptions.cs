@@ -70,4 +70,11 @@ public sealed class SqlInboxStoreOptions
     /// Requires SQL Server 2019+ or Azure SQL.
     /// </summary>
     public bool UseSkipLocked { get; set; } = true;
+
+    /// <summary>
+    /// Messages stuck in Processing for longer than this are considered abandoned
+    /// (e.g. the process crashed mid-handling) and will be picked up again.
+    /// Defaults to 5 minutes. Set to null to disable stale-processing recovery.
+    /// </summary>
+    public TimeSpan? ProcessingStalenessTimeout { get; set; } = TimeSpan.FromMinutes(5);
 }

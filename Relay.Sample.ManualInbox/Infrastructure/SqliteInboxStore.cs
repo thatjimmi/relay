@@ -90,6 +90,44 @@ public sealed class SqliteInboxStore(string connectionString, string tableName =
         return (id, sourceTimestamp);
     }
 
+    public async Task<InboxMessage?> GetByIdempotencyKeyAsync(
+        string idempotencyKey, CancellationToken ct = default)
+    {
+        var sql = $"""
+            SELECT Id, InboxName, Type, IdempotencyKey, Payload,
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
+            FROM [{_table}]
+            WHERE IdempotencyKey = @key
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@key", idempotencyKey);
+
+        var results = await ReadMessagesAsync(cmd, ct);
+        return results.Count > 0 ? results[0] : null;
+    }
+
+    public async Task<IReadOnlyList<InboxMessage>> GetByIdempotencyKeyPrefixAsync(
+        string inboxName, string keyPrefix, CancellationToken ct = default)
+    {
+        var sql = $"""
+            SELECT Id, InboxName, Type, IdempotencyKey, Payload,
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
+            FROM [{_table}]
+            WHERE InboxName = @inbox
+              AND IdempotencyKey LIKE @prefix
+            ORDER BY ReceivedAt ASC
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@inbox",  inboxName);
+        cmd.Parameters.AddWithValue("@prefix", keyPrefix + "%");
+
+        return await ReadMessagesAsync(cmd, ct);
+    }
+
     public async Task<bool> UpdateIfNewerAsync(
         string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default)
     {

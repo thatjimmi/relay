@@ -45,6 +45,25 @@ public sealed class SqlOutboxStore(SqlOutboxStoreOptions options) : IOutboxStore
                     ON [{_table}] (CorrelationId)
                     WHERE CorrelationId IS NOT NULL;
             END
+
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '{_table}Status')
+            BEGIN
+                CREATE TABLE [{_table}Status] (
+                    Id   TINYINT       NOT NULL PRIMARY KEY,
+                    Name NVARCHAR(50)  NOT NULL
+                );
+
+                INSERT INTO [{_table}Status] (Id, Name) VALUES
+                    (0, 'Pending'),
+                    (1, 'Dispatching'),
+                    (2, 'Published'),
+                    (3, 'Failed'),
+                    (4, 'DeadLettered');
+
+                ALTER TABLE [{_table}]
+                    ADD CONSTRAINT FK_{_table}_Status
+                    FOREIGN KEY (Status) REFERENCES [{_table}Status] (Id);
+            END
             """;
 
         await using var conn = await OpenAsync(ct);
@@ -69,6 +88,32 @@ public sealed class SqlOutboxStore(SqlOutboxStoreOptions options) : IOutboxStore
 
         await using var conn = await OpenAsync(ct);
         await using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@id",            SqlDbType.UniqueIdentifier).Value = message.Id;
+        cmd.Parameters.Add("@outboxName",    SqlDbType.NVarChar, 100).Value    = message.OutboxName;
+        cmd.Parameters.Add("@type",          SqlDbType.NVarChar, 250).Value    = message.Type;
+        cmd.Parameters.Add("@payload",       SqlDbType.NVarChar, -1).Value     = message.Payload;
+        cmd.Parameters.Add("@correlationId", SqlDbType.NVarChar, 100).Value    = (object?)message.CorrelationId ?? DBNull.Value;
+        cmd.Parameters.Add("@traceId",       SqlDbType.NVarChar, 100).Value    = (object?)message.TraceId       ?? DBNull.Value;
+        cmd.Parameters.Add("@destination",   SqlDbType.NVarChar, 500).Value    = (object?)message.Destination   ?? DBNull.Value;
+        cmd.Parameters.Add("@status",        SqlDbType.TinyInt).Value          = (int)message.Status;
+        cmd.Parameters.Add("@createdAt",     SqlDbType.DateTime2).Value        = message.CreatedAt;
+        cmd.Parameters.Add("@scheduledFor",  SqlDbType.DateTime2).Value        = (object?)message.ScheduledFor  ?? DBNull.Value;
+
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task InsertAsync(OutboxMessage message, System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction? transaction, CancellationToken ct = default)
+    {
+        var sql = $"""
+            INSERT INTO [{_table}]
+                (Id, OutboxName, [Type], Payload, CorrelationId, TraceId,
+                 Destination, Status, CreatedAt, ScheduledFor)
+            VALUES
+                (@id, @outboxName, @type, @payload, @correlationId, @traceId,
+                 @destination, @status, @createdAt, @scheduledFor)
+            """;
+
+        await using var cmd = new SqlCommand(sql, (SqlConnection)connection, (SqlTransaction?)transaction);
         cmd.Parameters.Add("@id",            SqlDbType.UniqueIdentifier).Value = message.Id;
         cmd.Parameters.Add("@outboxName",    SqlDbType.NVarChar, 100).Value    = message.OutboxName;
         cmd.Parameters.Add("@type",          SqlDbType.NVarChar, 250).Value    = message.Type;

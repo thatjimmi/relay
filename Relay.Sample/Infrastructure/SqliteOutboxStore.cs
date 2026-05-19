@@ -79,6 +79,12 @@ public sealed class SqliteOutboxStore(string connectionString, string tableName 
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public Task InsertAsync(OutboxMessage message, System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction? transaction, CancellationToken ct = default)
+    {
+        // Sqlite sample does not support external transaction — delegate to standard insert.
+        return InsertAsync(message, ct);
+    }
+
     // -------------------------------------------------------------------------
     // Read path — LIMIT, datetime('now') instead of SYSUTCDATETIME(), no hints
     // -------------------------------------------------------------------------

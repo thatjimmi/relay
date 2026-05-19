@@ -28,6 +28,23 @@ public sealed class InMemoryInboxStore : IInboxStore
         return Task.FromResult<(Guid, DateTime?)?>(null);
     }
 
+    public Task<InboxMessage?> GetByIdempotencyKeyAsync(
+        string idempotencyKey, CancellationToken ct = default) =>
+        Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var m) ? m : null);
+
+    public Task<IReadOnlyList<InboxMessage>> GetByIdempotencyKeyPrefixAsync(
+        string inboxName, string keyPrefix, CancellationToken ct = default)
+    {
+        var results = _byId.Values
+            .Where(m => m.InboxName == inboxName
+                        && m.IdempotencyKey is not null
+                        && m.IdempotencyKey.StartsWith(keyPrefix, StringComparison.Ordinal))
+            .OrderBy(m => m.ReceivedAt)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<InboxMessage>>(results);
+    }
+
     public Task<bool> UpdateIfNewerAsync(
         string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default)
     {

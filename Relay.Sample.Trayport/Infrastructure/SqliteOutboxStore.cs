@@ -79,6 +79,11 @@ public sealed class SqliteOutboxStore(string connectionString, string tableName 
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public Task InsertAsync(OutboxMessage message, System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction? transaction, CancellationToken ct = default)
+    {
+        return InsertAsync(message, ct);
+    }
+
     // -------------------------------------------------------------------------
     // Read path
     // -------------------------------------------------------------------------

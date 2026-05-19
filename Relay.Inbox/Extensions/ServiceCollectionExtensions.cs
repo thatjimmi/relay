@@ -239,6 +239,9 @@ public sealed class InboxBuilder
     public InboxBuilder WithHandler<TMessage, THandler>()
         where THandler : class, IInboxHandler<TMessage>
     {
+        // Use Add (not AddScoped which replaces) so multiple handlers for the same
+        // message type across different inboxes are all resolvable via GetServices<>().
+        services.AddScoped<THandler>();
         services.AddScoped<IInboxHandler<TMessage>, THandler>();
 
         // Register the receiver for this specific message type.
@@ -251,8 +254,8 @@ public sealed class InboxBuilder
             return new InboxReceiver<TMessage>(store, handler, inboxName, _options);
         });
 
-        // Tell the registry what CLR type maps to this message name in this inbox
-        registry.Register(inboxName, typeof(TMessage));
+        // Tell the registry what CLR type + handler implementation maps to this inbox
+        registry.Register(inboxName, typeof(TMessage), typeof(THandler));
 
         return this;
     }

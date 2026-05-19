@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Relay.Inbox.Core;
 
@@ -89,15 +90,24 @@ internal sealed class InboxProcessor(
                 $"Did you forget to call .WithHandler<{msg.Type}, YourHandler>()? " +
                 $"For handler-free processing use IInboxClient instead.");
 
-        var handlerType = typeof(IInboxHandler<>).MakeGenericType(messageType);
-        var handler = sp.GetService(handlerType)
-            ?? throw new InvalidOperationException(
+        var handlerInterfaceType = typeof(IInboxHandler<>).MakeGenericType(messageType);
+
+        // Resolve the specific handler implementation registered for this inbox,
+        // not just the last-registered IInboxHandler<T> (which breaks when multiple
+        // inboxes handle the same message type).
+        var concreteHandlerType = registry.ResolveHandler(inboxName, msg.Type);
+        var handler = concreteHandlerType is not null
+            ? sp.GetServices(handlerInterfaceType).FirstOrDefault(h => h!.GetType() == concreteHandlerType)
+            : sp.GetService(handlerInterfaceType);
+
+        if (handler is null)
+            throw new InvalidOperationException(
                 $"Handler for '{msg.Type}' is registered but could not be resolved from DI.");
 
         var payload = JsonSerializer.Deserialize(msg.Payload, messageType)
             ?? throw new InvalidOperationException($"Failed to deserialize payload for '{msg.Type}'.");
 
-        var handleMethod = handlerType.GetMethod(nameof(IInboxHandler<object>.HandleAsync))!;
+        var handleMethod = handlerInterfaceType.GetMethod(nameof(IInboxHandler<object>.HandleAsync))!;
         await (Task)handleMethod.Invoke(handler, [payload, ct])!;
     }
 }

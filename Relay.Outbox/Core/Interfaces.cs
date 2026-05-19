@@ -96,10 +96,43 @@ public interface IOutboxRequeue
 public interface IOutboxStore : IOutboxQuery, IOutboxRequeue
 {
     Task InsertAsync(OutboxMessage message, CancellationToken ct = default);
+
+    /// <summary>
+    /// Insert using an external connection and optional transaction.
+    /// Enables atomic writes alongside other business logic in the same transaction.
+    /// </summary>
+    Task InsertAsync(OutboxMessage message, System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction? transaction, CancellationToken ct = default);
+
     Task<IReadOnlyList<OutboxMessage>> GetPendingAsync(string outboxName, int batchSize, CancellationToken ct = default);
     Task MarkDispatchingAsync(Guid id, CancellationToken ct = default);
     Task MarkPublishedAsync(Guid id, CancellationToken ct = default);
     Task MarkFailedAsync(Guid id, string error, int retryCount, CancellationToken ct = default);
     Task MarkDeadLetteredAsync(Guid id, string error, CancellationToken ct = default);
     Task EnsureSchemaAsync(CancellationToken ct = default);
+}
+
+/// <summary>
+/// Write a message to the outbox within an external database transaction.
+/// Guarantees atomic persistence of business data and outbox message together.
+/// </summary>
+public interface ITransactionalOutboxWriter
+{
+    /// <summary>
+    /// Stage a message for eventual dispatch, enlisting in the provided transaction.
+    /// </summary>
+    Task<OutboxWriteResult> WriteAsync<TMessage>(
+        TMessage message,
+        string outboxName,
+        System.Data.Common.DbTransaction transaction,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Stage a message with a destination hint, enlisting in the provided transaction.
+    /// </summary>
+    Task<OutboxWriteResult> WriteAsync<TMessage>(
+        TMessage message,
+        string outboxName,
+        string destination,
+        System.Data.Common.DbTransaction transaction,
+        CancellationToken ct = default);
 }

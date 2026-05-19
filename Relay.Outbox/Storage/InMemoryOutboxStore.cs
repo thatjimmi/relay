@@ -22,6 +22,13 @@ public sealed class InMemoryOutboxStore : IOutboxStore
         return Task.CompletedTask;
     }
 
+    public Task InsertAsync(OutboxMessage message, System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction? transaction, CancellationToken ct = default)
+    {
+        // In-memory store ignores connection/transaction — just stores the message.
+        _byId[message.Id] = message;
+        return Task.CompletedTask;
+    }
+
     // -------------------------------------------------------------------------
     // Read path
     // -------------------------------------------------------------------------

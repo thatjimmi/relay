@@ -19,7 +19,7 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
     public async Task EnsureSchemaAsync(CancellationToken ct = default)
     {
         const string sql = """
-            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = @table)
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '{table}')
             BEGIN
                 CREATE TABLE [{table}] (
                     Id              UNIQUEIDENTIFIER    NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
@@ -69,6 +69,25 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
                 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_{table}_IdempotencyKey' AND object_id = OBJECT_ID(N'[{table}]'))
                     EXEC('CREATE UNIQUE NONCLUSTERED INDEX UQ_{table}_IdempotencyKey ON [{table}] (IdempotencyKey) WHERE IdempotencyKey IS NOT NULL');
             END
+
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '{table}Status')
+            BEGIN
+                CREATE TABLE [{table}Status] (
+                    Id   TINYINT       NOT NULL PRIMARY KEY,
+                    Name NVARCHAR(50)  NOT NULL
+                );
+
+                INSERT INTO [{table}Status] (Id, Name) VALUES
+                    (0, 'Pending'),
+                    (1, 'Processing'),
+                    (2, 'Processed'),
+                    (3, 'Failed'),
+                    (4, 'DeadLettered');
+
+                ALTER TABLE [{table}]
+                    ADD CONSTRAINT FK_{table}_Status
+                    FOREIGN KEY (Status) REFERENCES [{table}Status] (Id);
+            END
             """;
 
         // We can't use parameters for table names, but we control this value from config
@@ -112,6 +131,47 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         DateTime? sourceTimestamp = reader.IsDBNull(1) ? null : reader.GetDateTime(1);
         return (id, sourceTimestamp);
     }
+
+    public async Task<InboxMessage?> GetByIdempotencyKeyAsync(
+        string idempotencyKey, CancellationToken ct = default)
+    {
+        var sql = $"""
+            SELECT Id, InboxName, [Type], IdempotencyKey, Payload,
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
+            FROM [{_table}]
+            WHERE IdempotencyKey = @key
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@key", SqlDbType.NVarChar, 500).Value = idempotencyKey;
+
+        var results = await ReadMessagesAsync(cmd, ct);
+        return results.Count > 0 ? results[0] : null;
+    }
+
+    public async Task<IReadOnlyList<InboxMessage>> GetByIdempotencyKeyPrefixAsync(
+        string inboxName, string keyPrefix, CancellationToken ct = default)
+    {
+        var sql = $"""
+            SELECT Id, InboxName, [Type], IdempotencyKey, Payload,
+                   Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
+            FROM [{_table}]
+            WHERE InboxName = @inbox
+              AND IdempotencyKey LIKE @prefix + N'%'
+            ORDER BY ReceivedAt ASC
+            """;
+
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.Add("@inbox",  SqlDbType.NVarChar, 100).Value = inboxName;
+        cmd.Parameters.Add("@prefix", SqlDbType.NVarChar, 500).Value = EscapeLikeWildcards(keyPrefix);
+
+        return await ReadMessagesAsync(cmd, ct);
+    }
+
+    private static string EscapeLikeWildcards(string input) =>
+        input.Replace("[", "[[]").Replace("%", "[%]").Replace("_", "[_]");
 
     public async Task<bool> UpdateIfNewerAsync(
         string idempotencyKey, string payload, DateTime sourceTimestamp, CancellationToken ct = default)
@@ -224,12 +284,18 @@ public sealed class SqlInboxStore(SqlInboxStoreOptions options) : IInboxStore
         // each one claims a distinct batch without distributed locking.
         var skipLocked = options.UseSkipLocked ? "WITH (UPDLOCK, READPAST)" : "WITH (UPDLOCK)";
 
+        // Recover messages stuck in Processing (e.g. process crashed mid-handling).
+        var staleProcessingClause = options.ProcessingStalenessTimeout.HasValue
+            ? $"OR (Status = {(int)InboxMessageStatus.Processing} AND ReceivedAt < DATEADD(SECOND, -{(int)options.ProcessingStalenessTimeout.Value.TotalSeconds}, SYSUTCDATETIME()))"
+            : "";
+
         var sql = $"""
             SELECT TOP (@batch) Id, InboxName, [Type], IdempotencyKey, Payload,
                                 Status, ReceivedAt, ProcessedAt, Error, RetryCount, TraceId, Source, SourceTimestamp
             FROM [{_table}] {skipLocked}
             WHERE InboxName = @inbox
-              AND Status IN ({(int)InboxMessageStatus.Pending}, {(int)InboxMessageStatus.Failed})
+              AND (Status IN ({(int)InboxMessageStatus.Pending}, {(int)InboxMessageStatus.Failed})
+                   {staleProcessingClause})
             ORDER BY ReceivedAt ASC
             """;
 

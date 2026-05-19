@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
             registry = new PublisherRegistry();
             services.AddSingleton(registry);
             services.AddScoped<IOutboxWriter, OutboxWriter>();
+            services.AddScoped<ITransactionalOutboxWriter, TransactionalOutboxWriter>();
             services.AddScoped<IOutboxDispatcher, OutboxDispatcher>();
         }
         else
@@ -246,6 +247,57 @@ public sealed class OutboxBuilder
     {
         _options.OnDeadLettered = hook;
         return this;
+    }
+
+    /// <summary>
+    /// Enable automatic background dispatch for this outbox. Registers a
+    /// <see cref="BackgroundService"/> that wakes immediately when a message
+    /// is stored and also polls on a fallback interval.
+    /// <para>
+    /// This replaces the need for a hand-written dispatcher service and the
+    /// <c>OnMessageStored</c> wake hook — both are wired internally.
+    /// </para>
+    /// </summary>
+    /// <example>
+    /// services.AddOutbox("orders", outbox => outbox
+    ///     .WithPublisher&lt;OrderConfirmed, OrderPublisher&gt;()
+    ///     .WithAutoDispatch(o => o.FallbackInterval = TimeSpan.FromSeconds(15)));
+    /// </example>
+    public OutboxBuilder WithAutoDispatch(Action<AutoDispatchOptions>? configure = null)
+    {
+        var dispatchOptions = new AutoDispatchOptions();
+        configure?.Invoke(dispatchOptions);
+
+        var signalRegistry = EnsureWakeSignalRegistry(services);
+        var signal = signalRegistry.GetOrCreate(outboxName);
+
+        // Wire OnMessageStored to wake the auto-dispatcher.
+        // If the user already set OnMessageStored, chain the hooks.
+        var existingHook = _options.OnMessageStored;
+        _options.OnMessageStored = existingHook is null
+            ? _ => { signal.Wake(); return Task.CompletedTask; }
+            : async msg => { signal.Wake(); await existingHook(msg); };
+
+        // Register the background dispatcher for this outbox.
+        services.AddSingleton<IHostedService>(sp => new Internal.OutboxAutoDispatcherService(
+            outboxName,
+            signal,
+            dispatchOptions,
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<Internal.OutboxAutoDispatcherService>()));
+
+        return this;
+    }
+
+    private static Internal.OutboxWakeSignalRegistry EnsureWakeSignalRegistry(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d => d.ServiceType == typeof(Internal.OutboxWakeSignalRegistry));
+        if (existing != null)
+            return (Internal.OutboxWakeSignalRegistry)existing.ImplementationInstance!;
+
+        var registry = new Internal.OutboxWakeSignalRegistry();
+        services.AddSingleton(registry);
+        return registry;
     }
 }
 
